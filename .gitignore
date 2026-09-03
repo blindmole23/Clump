@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-ssr/
+.vercel/
+.cache/
 .env
 .env.local
 *.log
