@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import {
   CAMERA_DIST_BASE,
   CLUMP_SCREEN_OFFSET,
@@ -107,7 +107,8 @@ export class FidgetEngine {
   private lastStretchAt = 0;
   private muted = false;
   private geom: THREE.BufferGeometry;
-  private mat: THREE.MeshPhongMaterial;
+  private mat: THREE.MeshStandardMaterial;
+  private envTexture: THREE.Texture;
   private ndcClamp = new THREE.Vector3();
   private shapePull = 0;
   private lookTarget = new THREE.Vector3();
@@ -132,13 +133,31 @@ export class FidgetEngine {
     this.renderer.setClearColor(0x0c0b0a, 1);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Metal + an environment map needs real tone mapping, or the reflected
+    // light range renders muddy/near-black instead of a proper metal sheen.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0c0b0a);
     this.scene.fog = new THREE.Fog(0x0c0b0a, 6.5, 12);
 
+    // Metal needs something to reflect or it renders near-black outside its
+    // direct specular highlights. A tiny procedural room is the standard
+    // cheap way to get that: generated once here, sampled per-pixel after —
+    // no texture download, no per-frame cost beyond a normal cubemap lookup.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environment = this.envTexture;
+
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.1, 30);
-    this.camera.position.set(0, 0.2, this.camDist);
+    // Snap straight to the steady-state orbit position/framing instead of a
+    // mismatched fixed point the render loop then has to lerp away from —
+    // during that lerp the camera briefly looks at the wrong framing, and
+    // clampToDisplay (running from frame 1) would "correct" particles for
+    // that wrong framing hard enough to snap bonds permanently.
+    this.placeCamera(0, true);
 
     const hemi = new THREE.HemisphereLight(0xf0e6d8, 0x1a1612, 0.72);
     this.scene.add(hemi);
@@ -167,17 +186,14 @@ export class FidgetEngine {
     this.shadow.position.y = -1.55;
     this.scene.add(this.shadow);
 
-    this.geom = new RoundedBoxGeometry(
-      VOXEL_SIZE,
-      VOXEL_SIZE,
-      VOXEL_SIZE,
-      1,
-      VOXEL_SIZE * 0.16,
-    );
-    this.mat = new THREE.MeshPhongMaterial({
+    // Low segment counts on purpose — this is one geometry instanced ~260
+    // times, and a shiny sphere reads as smooth well before 16x12 segments.
+    this.geom = new THREE.SphereGeometry(VOXEL_SIZE * 0.52, 14, 10);
+    this.mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      shininess: 34,
-      specular: 0x3a322c,
+      metalness: 0.92,
+      roughness: 0.28,
+      envMapIntensity: 1.4,
     });
     this.mesh = new THREE.InstancedMesh(this.geom, this.mat, this.state.n);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -248,6 +264,7 @@ export class FidgetEngine {
     this.unbind();
     this.geom.dispose();
     this.mat.dispose();
+    this.envTexture.dispose();
     (this.shadow.material as THREE.Material).dispose();
     this.shadow.geometry.dispose();
     this.mesh.dispose();
@@ -560,40 +577,51 @@ export class FidgetEngine {
     return [this.planeHit.x, this.planeHit.y, this.planeHit.z];
   }
 
-  private clampToDisplay() {
+  private clampToDisplay(dt: number) {
+    // Forward projection (world -> NDC) is always numerically stable, so it's
+    // still how we detect "has this drifted off-screen." What used to happen
+    // next — clamping the NDC coordinate and calling .unproject() to get a
+    // world position back — is NOT stable: at grazing angles, or once a
+    // point is anywhere near or behind the camera's view plane, that inverse
+    // transform can round-trip to a wildly different world position than
+    // the one that went in. That was the "random teleport" bug. Instead,
+    // once something's detected off-screen, just ease it toward the world
+    // origin (where the clump actually lives) in world space — never invert
+    // the projection at all. Pulling toward lookTarget instead of the origin
+    // was an earlier version of this fix and a bug in its own right: the
+    // camera deliberately AIMS away from the clump's real position (that's
+    // what puts it left-of-center on screen), so nudging particles toward
+    // that aim point pulled them away from where the lump's own bonds were
+    // trying to hold them — a slow-motion version of the exact instability
+    // this function exists to prevent.
     const m = SCREEN_MARGIN;
     const { n, pos, grabWeight } = this.state;
+    const t = 1 - Math.exp(-5 * dt);
     for (let i = 0; i < n; i++) {
       if (grabWeight[i]! > 0.55) continue;
-      this.ndcClamp.set(pos[i * 3]!, pos[i * 3 + 1]!, pos[i * 3 + 2]!);
+      const i3 = i * 3;
+      this.ndcClamp.set(pos[i3]!, pos[i3 + 1]!, pos[i3 + 2]!);
       this.ndcClamp.project(this.camera);
-      let hit = false;
-      if (this.ndcClamp.x > 1 - m) {
-        this.ndcClamp.x = 1 - m;
-        hit = true;
-      } else if (this.ndcClamp.x < -1 + m) {
-        this.ndcClamp.x = -1 + m;
-        hit = true;
-      }
-      if (this.ndcClamp.y > 1 - m) {
-        this.ndcClamp.y = 1 - m;
-        hit = true;
-      } else if (this.ndcClamp.y < -1 + m) {
-        this.ndcClamp.y = -1 + m;
-        hit = true;
-      }
-      if (this.ndcClamp.z > 0.96) {
-        this.ndcClamp.z = 0.96;
-        hit = true;
-      } else if (this.ndcClamp.z < 0.15) {
-        this.ndcClamp.z = 0.15;
-        hit = true;
-      }
-      if (!hit) continue;
-      this.ndcClamp.unproject(this.camera);
-      pos[i * 3] = this.ndcClamp.x;
-      pos[i * 3 + 1] = this.ndcClamp.y;
-      pos[i * 3 + 2] = this.ndcClamp.z;
+      // x/y margins do the real "stay visible" work. z only needs to catch
+      // pathological depth (behind the camera, or corrupted) -- the whole
+      // lump's normal depth range sits within a few hundredths of 1 (far
+      // plane) at this camera distance, so anything tighter than that
+      // flags ordinary, correctly-placed particles as "off-screen" every
+      // single frame.
+      const outOfBounds =
+        !Number.isFinite(this.ndcClamp.x) ||
+        !Number.isFinite(this.ndcClamp.y) ||
+        !Number.isFinite(this.ndcClamp.z) ||
+        this.ndcClamp.x > 1 - m ||
+        this.ndcClamp.x < -1 + m ||
+        this.ndcClamp.y > 1 - m ||
+        this.ndcClamp.y < -1 + m ||
+        this.ndcClamp.z > 0.999 ||
+        this.ndcClamp.z < -1;
+      if (!outOfBounds) continue;
+      pos[i3] = pos[i3]! - pos[i3]! * t;
+      pos[i3 + 1] = pos[i3 + 1]! - pos[i3 + 1]! * t;
+      pos[i3 + 2] = pos[i3 + 2]! - pos[i3 + 2]! * t;
     }
   }
 
@@ -623,7 +651,7 @@ export class FidgetEngine {
     this.hasDetached = hasDetached;
     this.shapePull *= Math.exp(-0.55 * dt);
     if (snaps > 0) playSnap(snaps);
-    this.clampToDisplay();
+    this.clampToDisplay(dt);
 
     const rec = !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
     if (rec !== this.recovering) {
@@ -639,7 +667,7 @@ export class FidgetEngine {
     this.renderer.render(this.scene, this.camera);
   };
 
-  private placeCamera(dt: number) {
+  private placeCamera(dt: number, instant = false) {
     const yaw = this.camYaw;
     const pitch = this.camPitch;
     const dist = this.camDist;
@@ -650,7 +678,11 @@ export class FidgetEngine {
     const y = Math.sin(pitch) * dist + 0.15 + oy;
     const z = Math.cos(yaw) * Math.cos(pitch) * dist;
     this.tmp.set(x, y, z);
-    this.camera.position.lerp(this.tmp, 1 - Math.exp(-8 * dt));
+    if (instant) {
+      this.camera.position.copy(this.tmp);
+    } else {
+      this.camera.position.lerp(this.tmp, 1 - Math.exp(-8 * dt));
+    }
     // Aim slightly to the camera's own right (not straight at the clump) so
     // the clump renders left-of-center, leaving open space on the right to
     // pull chunks into — this tracks the current yaw so it holds as the

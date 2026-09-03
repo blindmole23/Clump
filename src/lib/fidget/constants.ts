@@ -37,6 +37,17 @@ export const MAGNET_PULL_SPEED = 1;
 export const GRAB_RADIUS = 0.62;
 export const SCREEN_MARGIN = 0.08;
 
+/**
+ * Single threshold for every binary "is this particle currently under your
+ * finger at all" decision — grab-follow integration, idle-clock reset,
+ * drag-resistance scope, magnet-pull eligibility, the world-radius clamp
+ * exemption, and bond-break protection. Used to be a patchwork of 0.2/0.25
+ * scattered around physics.ts, which left a 0.02–0.2 gap where a loosely
+ * grabbed (falloff) particle was still being visually dragged but treated
+ * as fully idle everywhere else — the source of several bugs at once.
+ */
+export const GRAB_HELD_EPS = 0.02;
+
 /** World-space bias applied to the camera's look target so the clump sits
  * left of center, leaving open space on the right to pull chunks into. */
 export const CLUMP_SCREEN_OFFSET = 1.1;

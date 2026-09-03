@@ -1,5 +1,6 @@
 import {
   BOND_STIFFNESS,
+  GRAB_HELD_EPS,
   HOME_ACTIVE,
   MAGNET_BREAK,
   MAGNET_DELAY,
@@ -183,7 +184,24 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
     pulse[i] = pulse[i]! * Math.exp(-10 * dt);
     // Per-particle, not global: touching one group must never reset the
     // idle clock of an unrelated group sitting elsewhere on screen.
-    idleFor[i] = grabWeight[i]! > 0.2 ? 0 : idleFor[i]! + dt;
+    idleFor[i] = grabWeight[i]! > GRAB_HELD_EPS ? 0 : idleFor[i]! + dt;
+  }
+
+  // Which particles are in the same connected group as anything currently
+  // grabbed, however loosely — the drag-resistance spring below must only
+  // ever touch material actually attached to what you're dragging, never
+  // an unrelated group sitting elsewhere that happens to also be ungrabbed.
+  const preClusters = computeClusters(bonds, n);
+  const inHeldGroup = new Uint8Array(n);
+  for (const members of preClusters) {
+    let held = false;
+    for (const i of members) {
+      if (grabWeight[i]! > GRAB_HELD_EPS) {
+        held = true;
+        break;
+      }
+    }
+    if (held) for (const i of members) inHeldGroup[i] = 1;
   }
 
   const iters = dt > 1 / 42 ? 4 : PBD_ITERS;
@@ -204,7 +222,13 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
       if (d < 1e-6) continue;
 
       if (bond.live) {
-        if (d > breakDist) {
+        // While both ends are under your finger (however loosely), the bond
+        // between them must not break from ordinary drag lag — otherwise a
+        // multi-block grab shears itself apart internally the moment the
+        // tightly-held center outruns its loosely-held edges.
+        const bothGrabbed =
+          grabWeight[bond.a]! > GRAB_HELD_EPS && grabWeight[bond.b]! > GRAB_HELD_EPS;
+        if (d > breakDist && !bothGrabbed) {
           bond.live = 0;
           bond.cooldown = REFORM_DELAY;
           continue;
@@ -247,7 +271,10 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
     const hk = home * (iter === iters - 1 ? 1 : 0.45);
     if (hk > 0) {
       for (let i = 0; i < n; i++) {
-        if (grabWeight[i]! > 0.2) continue;
+        // Resistance is felt only by material actually attached to whatever
+        // you're dragging — never by an unrelated group elsewhere, even
+        // though it's equally "not grabbed" and interacting is globally true.
+        if (grabWeight[i]! > GRAB_HELD_EPS || !inHeldGroup[i]) continue;
         const i3 = i * 3;
         pos[i3] = pos[i3]! + (rest[i3]! - pos[i3]!) * hk;
         pos[i3 + 1] = pos[i3 + 1]! + (rest[i3 + 1]! - pos[i3 + 1]!) * hk;
@@ -271,7 +298,7 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
     const d2 = x * x + y * y + z * z;
     // A held block must never be yanked out of your hand — only clamp what
     // isn't currently grabbed (matches the exemption the home-spring uses).
-    if (d2 > limit2 && grabWeight[i]! <= 0.2) {
+    if (d2 > limit2 && grabWeight[i]! <= GRAB_HELD_EPS) {
       const s = limit / Math.sqrt(d2);
       pos[i3] = x * s;
       pos[i3 + 1] = y * s;
@@ -350,7 +377,7 @@ export function applyGroupMagneticPull(
       ccy = 0,
       ccz = 0;
     for (const i of members) {
-      if (grabWeight[i]! > 0.2) held = true;
+      if (grabWeight[i]! > GRAB_HELD_EPS) held = true;
       if (idleFor[i]! < minIdle) minIdle = idleFor[i]!;
       const i3 = i * 3;
       rcx += rest[i3]!;
