@@ -1,9 +1,11 @@
+import { useState } from "react";
 import {
   Circle,
   Crosshair,
   Hand,
   Pen,
   RotateCcw,
+  Settings,
   Shovel,
   Triangle,
   Volume2,
@@ -12,8 +14,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { setMuted as setAudioMuted, unlockAudio } from "@/lib/fidget/audio";
 import { useFidget } from "@/lib/fidget/store";
-import { TOOLS, type ToolId } from "@/lib/fidget/types";
+import { TOOLS, type MagnetSize, type ToolId } from "@/lib/fidget/types";
 import { cn } from "@/lib/utils";
+
+const SIZES: { id: MagnetSize; label: string }[] = [
+  { id: "small", label: "Small" },
+  { id: "medium", label: "Medium" },
+  { id: "large", label: "Large" },
+];
 
 const ICONS: Record<ToolId, typeof Hand> = {
   hand: Hand,
@@ -43,6 +51,9 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
   const tapTitle = useFidget((s) => s.tapTitle);
   const shape = useFidget((s) => s.shape);
   const setShape = useFidget((s) => s.setShape);
+  const magnetSize = useFidget((s) => s.magnetSize);
+  const setMagnetSize = useFidget((s) => s.setMagnetSize);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const tools = gunUnlocked
     ? [...TOOLS, { id: "gun" as const, label: "Gun", hint: "Point and fire" }]
@@ -90,7 +101,7 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
                 magnetic fidget
               </p>
             </button>
-            <div className="pointer-events-auto flex gap-1">
+            <div className="pointer-events-auto relative flex gap-1">
               <Button
                 variant="ghost"
                 size="icon"
@@ -115,6 +126,37 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
               >
                 <RotateCcw className="size-5" strokeWidth={1.75} />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Settings"
+                aria-pressed={settingsOpen}
+                onClick={() => setSettingsOpen((v) => !v)}
+              >
+                <Settings className="size-5" strokeWidth={1.75} />
+              </Button>
+              {settingsOpen ? (
+                <div className="absolute right-0 top-[calc(100%+0.5rem)] w-48 rounded-2xl border border-border bg-surface/95 p-3 shadow-lg">
+                  <p className="text-xs tracking-wide text-subtle">
+                    Magnet size
+                  </p>
+                  <div className="mt-2 flex gap-1 rounded-xl border border-border bg-bg/40 p-1">
+                    {SIZES.map((s) => (
+                      <Button
+                        key={s.id}
+                        variant="dock"
+                        size="md"
+                        className="h-9 flex-1 px-0 text-xs"
+                        data-active={magnetSize === s.id}
+                        aria-pressed={magnetSize === s.id}
+                        onClick={() => setMagnetSize(s.id)}
+                      >
+                        {s.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </header>
 

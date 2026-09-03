@@ -1,9 +1,11 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import {
+  CAMERA_DIST_BASE,
   CLUMP_SCREEN_OFFSET,
   GRAB_RADIUS,
   MAGNET_DELAY,
+  MAGNET_SIZE_SCALE,
   SCREEN_MARGIN,
   VOXEL_SIZE,
   VOXEL_SPACING,
@@ -29,7 +31,7 @@ import {
   resumeAudioIfNeeded,
   unlockAudio,
 } from "./audio";
-import type { FidgetState, ShapeId, ToolId } from "./types";
+import type { FidgetState, MagnetSize, ShapeId, ToolId } from "./types";
 
 export type EngineHooks = {
   onRecovering: (v: boolean) => void;
@@ -90,7 +92,8 @@ export class FidgetEngine {
   private trauma = 0;
   private camYaw = 0.35;
   private camPitch = 0.18;
-  private camDist = 4.35;
+  private camDist = CAMERA_DIST_BASE;
+  private hasDetached = false;
   private reducedMotion: boolean;
   private flash: THREE.PointLight;
   private shadow: THREE.Mesh;
@@ -192,6 +195,10 @@ export class FidgetEngine {
 
   setMuted(v: boolean) {
     this.muted = v;
+  }
+
+  setMagnetSize(size: MagnetSize) {
+    this.camDist = CAMERA_DIST_BASE * MAGNET_SIZE_SCALE[size];
   }
 
   morphTo(shape: ShapeId) {
@@ -342,6 +349,26 @@ export class FidgetEngine {
       return;
     }
 
+    if (this.tool === "needle") {
+      // Precision single-magnet grab for testing: full weight, no falloff,
+      // and a much tighter hit tolerance than Hand so it targets exactly
+      // one block instead of collecting everything nearby.
+      const needleHit = closestToRay(this.state, ray.origin, ray.dir, 0.3);
+      if (needleHit) {
+        const i = needleHit.index;
+        const nx = this.state.pos[i * 3]!;
+        const ny = this.state.pos[i * 3 + 1]!;
+        const nz = this.state.pos[i * 3 + 2]!;
+        ptr.hit.set(nx, ny, nz);
+        ptr.indices = [i];
+        ptr.weights = [1];
+        ptr.offsets = new Float32Array([0, 0, 0]);
+      }
+      this.pointers.set(e.pointerId, ptr);
+      this.assignGrabs();
+      return;
+    }
+
     this.pointers.set(e.pointerId, ptr);
 
     if (this.tool === "gun") {
@@ -374,8 +401,8 @@ export class FidgetEngine {
     ];
     ptr.hit.set(planePt[0], planePt[1], planePt[2]);
 
-    if (this.tool === "hand") {
-      if (this.pointers.size >= 2) {
+    if (this.tool === "hand" || this.tool === "needle") {
+      if (this.tool === "hand" && this.pointers.size >= 2) {
         const now = performance.now();
         if (now - this.lastStretchAt > 180) {
           playStretch();
@@ -464,8 +491,6 @@ export class FidgetEngine {
     const d: [number, number, number] = [dir[0] / nd, dir[1] / nd, dir[2] / nd];
     if (this.tool === "spike") {
       applyImpulse(this.state, point, d, 0.26, tap ? 0.22 : 0.07 * amount, 0.85);
-    } else if (this.tool === "needle") {
-      applyImpulse(this.state, point, d, 0.12, tap ? 0.2 : 0.06 * amount, 1.1);
     } else if (this.tool === "trowel") {
       this.camera.getWorldDirection(this.camDir);
       applyPlaneSmear(
@@ -580,27 +605,31 @@ export class FidgetEngine {
     if (!this.interacting) this.idleFor += dt;
     else this.idleFor = 0;
 
-    const rec = !this.interacting && this.idleFor > MAGNET_DELAY;
-    if (rec !== this.recovering) {
-      this.recovering = rec;
-      this.hooks.onRecovering(rec);
-    }
-
-    if (!this.reducedMotion && !this.interacting) {
+    // Detached-piece framing (option b): the auto-orbit swings anything
+    // off-origin around the clump, so pause it while a piece is loose and
+    // resume once everything's reformed. Uses last frame's cluster count —
+    // this frame's is only known after stepPhysics runs, one line down.
+    if (!this.reducedMotion && !this.interacting && !this.hasDetached) {
       this.camYaw += dt * 0.12;
     }
     this.placeCamera(dt);
 
-    const snaps = stepPhysics(this.state, {
+    const { snaps, hasDetached } = stepPhysics(this.state, {
       dt,
-      idleFor: this.idleFor + this.shapePull * 2.4,
       interacting: this.interacting && this.shapePull < 0.15,
       worldRadius: 3.4,
       reducedMotion: this.reducedMotion,
     });
+    this.hasDetached = hasDetached;
     this.shapePull *= Math.exp(-0.55 * dt);
     if (snaps > 0) playSnap(snaps);
     this.clampToDisplay();
+
+    const rec = !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
+    if (rec !== this.recovering) {
+      this.recovering = rec;
+      this.hooks.onRecovering(rec);
+    }
 
     this.trauma = Math.max(0, this.trauma - dt * 1.8);
     this.flash.intensity *= Math.exp(-8 * dt);

@@ -2,6 +2,8 @@ export type ToolId = "hand" | "spike" | "trowel" | "loop" | "needle" | "gun";
 
 export type ShapeId = "lump" | "gun";
 
+export type MagnetSize = "small" | "medium" | "large";
+
 export type Cell = {
   gx: number;
   gy: number;
@@ -18,6 +20,9 @@ export type FidgetState = {
   grabWeight: Float32Array;
   grabTarget: Float32Array;
   baseColor: Float32Array;
+  /** Seconds since this particle was last grabbed — per-particle so one
+   * group's idle clock is never reset by touching a different group. */
+  idleFor: Float32Array;
   bonds: Bond[];
 };
 
@@ -41,5 +46,5 @@ export const TOOLS: Tool[] = [
   { id: "spike", label: "Spike", hint: "Punch a hole, split the mass" },
   { id: "trowel", label: "Trowel", hint: "Flatten and smear" },
   { id: "loop", label: "Loop", hint: "Scoop a pocket" },
-  { id: "needle", label: "Needle", hint: "Fine split" },
+  { id: "needle", label: "Needle", hint: "Pull a single magnet" },
 ];

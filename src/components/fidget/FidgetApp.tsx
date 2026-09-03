@@ -9,6 +9,7 @@ export function FidgetApp() {
   const engineRef = useRef<FidgetEngine | null>(null);
   const tool = useFidget((s) => s.tool);
   const muted = useFidget((s) => s.muted);
+  const magnetSize = useFidget((s) => s.magnetSize);
   const gunUnlocked = useFidget((s) => s.gunUnlocked);
   const setRecovering = useFidget((s) => s.setRecovering);
   const setVoxelCount = useFidget((s) => s.setVoxelCount);
@@ -43,6 +44,7 @@ export function FidgetApp() {
       });
       engine.setTool(useFidget.getState().tool);
       engine.setMuted(useFidget.getState().muted);
+      engine.setMagnetSize(useFidget.getState().magnetSize);
       engine.start();
       engineRef.current = engine;
     });
@@ -63,6 +65,10 @@ export function FidgetApp() {
     engineRef.current?.setMuted(muted);
     setMuted(muted);
   }, [muted]);
+
+  useEffect(() => {
+    engineRef.current?.setMagnetSize(magnetSize);
+  }, [magnetSize]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

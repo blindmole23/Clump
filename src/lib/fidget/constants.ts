@@ -41,4 +41,17 @@ export const SCREEN_MARGIN = 0.08;
  * left of center, leaving open space on the right to pull chunks into. */
 export const CLUMP_SCREEN_OFFSET = 1.1;
 
+/**
+ * On-screen magnet size. There's no web API for a device's true physical
+ * DPI (deliberately — browsers don't expose it), so this is a camera-zoom
+ * approximation rather than a calibrated millimeter size: closer camera =
+ * bigger-looking magnets. "medium" is the distance the app shipped with.
+ */
+export const CAMERA_DIST_BASE = 4.35;
+export const MAGNET_SIZE_SCALE: Record<"small" | "medium" | "large", number> = {
+  small: 1.4,
+  medium: 1,
+  large: 0.65,
+};
+
 export const GUN_UNLOCK_TAPS = 7;

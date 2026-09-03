@@ -65,6 +65,7 @@ export function createState(rest: Float32Array): FidgetState {
   const pulse = new Float32Array(n);
   const strain = new Float32Array(n);
   const baseColor = new Float32Array(n * 3);
+  const idleFor = new Float32Array(n);
 
   const clay = [
     [0.78, 0.42, 0.24],
@@ -92,6 +93,7 @@ export function createState(rest: Float32Array): FidgetState {
     grabWeight,
     grabTarget,
     baseColor,
+    idleFor,
     bonds: buildBonds(rest, n),
   };
 }
@@ -108,6 +110,7 @@ export function rematchRest(state: FidgetState, nextRest: Float32Array) {
   }
   state.rest.set(newRest);
   state.bonds = buildBonds(state.rest, n);
+  state.idleFor.fill(0);
 }
 
 export function resetToRest(state: FidgetState) {
@@ -115,6 +118,7 @@ export function resetToRest(state: FidgetState) {
   state.prev.set(state.rest);
   state.pulse.fill(0);
   state.grabWeight.fill(0);
+  state.idleFor.fill(0);
   for (const b of state.bonds) {
     b.live = 1;
     b.cooldown = 0;
@@ -123,15 +127,31 @@ export function resetToRest(state: FidgetState) {
 
 export type StepParams = {
   dt: number;
-  idleFor: number;
   interacting: boolean;
   worldRadius: number;
   reducedMotion: boolean;
 };
 
-export function stepPhysics(state: FidgetState, p: StepParams): number {
-  const { n, pos, prev, rest, grabWeight, grabTarget, pulse, strain, bonds } =
-    state;
+export type StepResult = {
+  /** How many bonds reformed this step (drives the "click" sound). */
+  snaps: number;
+  /** True when more than one connected group of magnets currently exists. */
+  hasDetached: boolean;
+};
+
+export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
+  const {
+    n,
+    pos,
+    prev,
+    rest,
+    grabWeight,
+    grabTarget,
+    pulse,
+    strain,
+    bonds,
+    idleFor,
+  } = state;
   const dt = p.dt;
   const spacing = VOXEL_SPACING;
   // The "clay" resistance spring only runs while you're actively dragging.
@@ -161,6 +181,9 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
       pos[i3 + 2] = pos[i3 + 2]! + vz;
     }
     pulse[i] = pulse[i]! * Math.exp(-10 * dt);
+    // Per-particle, not global: touching one group must never reset the
+    // idle clock of an unrelated group sitting elsewhere on screen.
+    idleFor[i] = grabWeight[i]! > 0.2 ? 0 : idleFor[i]! + dt;
   }
 
   const iters = dt > 1 / 42 ? 4 : PBD_ITERS;
@@ -235,9 +258,8 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
 
   resolveOverlaps(state, spacing * OVERLAP);
 
-  if (!p.interacting) {
-    applyMagneticPull(state, p.idleFor, dt);
-  }
+  const clusters = computeClusters(bonds, n);
+  applyGroupMagneticPull(state, clusters, dt);
 
   const limit = p.worldRadius;
   const limit2 = limit * limit;
@@ -262,38 +284,102 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
     strain[i] = Math.min(1, Math.hypot(dx, dy, dz) / (spacing * 3.2));
   }
 
-  return snaps;
+  return { snaps, hasDetached: clusters.length > 1 };
 }
 
 /**
- * Idle-only magnetic homing. Unlike a spring, this is a hard range limit at
- * constant speed: past MAGNET_RANGE_BLOCKS block-widths from its rest slot a
- * particle holds its position forever (out of the magnet's reach); inside
- * that range, once MAGNET_DELAY seconds have passed with no interaction, it
- * creeps home at exactly MAGNET_PULL_SPEED block-widths per second.
+ * Which connected group (by currently-live bonds) each particle belongs to.
+ * Union-find over the bond graph — cheap enough to run every physics step
+ * at this particle count (a few thousand array ops for ~1500 bonds).
  */
-export function applyMagneticPull(
+export function computeClusters(bonds: Bond[], n: number): number[][] {
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (x: number): number => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]!]!; // path halving
+      x = parent[x]!;
+    }
+    return x;
+  };
+  for (const bond of bonds) {
+    if (!bond.live) continue;
+    const ra = find(bond.a);
+    const rb = find(bond.b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    let list = groups.get(root);
+    if (!list) {
+      list = [];
+      groups.set(root, list);
+    }
+    list.push(i);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Idle-only magnetic homing, done per connected group rather than per
+ * particle. A pulled-off chunk is one entity: its "center" is the average
+ * rest slot of whatever's still attached to it, and it either holds its
+ * exact shape and position (out of magnet range, or someone in the group
+ * was touched inside the last MAGNET_DELAY seconds) or rigidly translates
+ * — same offset applied to every member, so the piece never deforms while
+ * homing — toward closing that center's gap at MAGNET_PULL_SPEED
+ * block-widths per second. Past MAGNET_RANGE_BLOCKS it holds forever.
+ */
+export function applyGroupMagneticPull(
   state: FidgetState,
-  idleFor: number,
+  clusters: number[][],
   dt: number,
 ) {
-  if (idleFor < MAGNET_DELAY) return;
-  const { n, pos, rest, grabWeight } = state;
+  const { pos, rest, grabWeight, idleFor } = state;
   const rangeWorld = MAGNET_RANGE_BLOCKS * VOXEL_SPACING;
   const stepWorld = MAGNET_PULL_SPEED * VOXEL_SPACING * dt;
-  for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > 0.2) continue;
-    const i3 = i * 3;
-    const dx = rest[i3]! - pos[i3]!;
-    const dy = rest[i3 + 1]! - pos[i3 + 1]!;
-    const dz = rest[i3 + 2]! - pos[i3 + 2]!;
+
+  for (const members of clusters) {
+    let held = false;
+    let minIdle = Infinity;
+    let rcx = 0,
+      rcy = 0,
+      rcz = 0,
+      ccx = 0,
+      ccy = 0,
+      ccz = 0;
+    for (const i of members) {
+      if (grabWeight[i]! > 0.2) held = true;
+      if (idleFor[i]! < minIdle) minIdle = idleFor[i]!;
+      const i3 = i * 3;
+      rcx += rest[i3]!;
+      rcy += rest[i3 + 1]!;
+      rcz += rest[i3 + 2]!;
+      ccx += pos[i3]!;
+      ccy += pos[i3 + 1]!;
+      ccz += pos[i3 + 2]!;
+    }
+    if (held || minIdle < MAGNET_DELAY) continue;
+
+    const m = members.length;
+    const dx = rcx / m - ccx / m;
+    const dy = rcy / m - ccy / m;
+    const dz = rcz / m - ccz / m;
     const dist = Math.hypot(dx, dy, dz);
     if (dist < 1e-6 || dist > rangeWorld) continue;
+
     const step = Math.min(dist, stepWorld);
     const inv = step / dist;
-    pos[i3] = pos[i3]! + dx * inv;
-    pos[i3 + 1] = pos[i3 + 1]! + dy * inv;
-    pos[i3 + 2] = pos[i3 + 2]! + dz * inv;
+    const tx = dx * inv,
+      ty = dy * inv,
+      tz = dz * inv;
+    for (const i of members) {
+      const i3 = i * 3;
+      pos[i3] = pos[i3]! + tx;
+      pos[i3 + 1] = pos[i3 + 1]! + ty;
+      pos[i3 + 2] = pos[i3 + 2]! + tz;
+    }
   }
 }
 

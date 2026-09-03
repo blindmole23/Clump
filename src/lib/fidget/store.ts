@@ -1,9 +1,10 @@
 import { create } from "zustand";
 import { GUN_UNLOCK_TAPS } from "./constants";
 import { playUnlock } from "./audio";
-import type { ShapeId, ToolId } from "./types";
+import type { MagnetSize, ShapeId, ToolId } from "./types";
 
 const GUN_KEY = "clump.gunUnlocked";
+const SIZE_KEY = "clump.magnetSize";
 
 function readGunUnlocked(): boolean {
   if (typeof window === "undefined") return false;
@@ -11,6 +12,16 @@ function readGunUnlocked(): boolean {
     return window.localStorage.getItem(GUN_KEY) === "1";
   } catch {
     return false;
+  }
+}
+
+function readMagnetSize(): MagnetSize {
+  if (typeof window === "undefined") return "medium";
+  try {
+    const v = window.localStorage.getItem(SIZE_KEY);
+    return v === "small" || v === "medium" || v === "large" ? v : "medium";
+  } catch {
+    return "medium";
   }
 }
 
@@ -25,6 +36,7 @@ type FidgetUI = {
   toast: string | null;
   titleTaps: number;
   lastTitleTap: number;
+  magnetSize: MagnetSize;
   start: () => void;
   setTool: (tool: ToolId) => void;
   setRecovering: (v: boolean) => void;
@@ -34,6 +46,7 @@ type FidgetUI = {
   tapTitle: () => void;
   unlockGun: () => void;
   setToast: (msg: string | null) => void;
+  setMagnetSize: (size: MagnetSize) => void;
 };
 
 export const useFidget = create<FidgetUI>((set, get) => ({
@@ -47,6 +60,7 @@ export const useFidget = create<FidgetUI>((set, get) => ({
   toast: null,
   titleTaps: 0,
   lastTitleTap: 0,
+  magnetSize: readMagnetSize(),
   start: () => set({ started: true }),
   setTool: (tool) => {
     if (tool === "gun" && !get().gunUnlocked) return;
@@ -79,5 +93,13 @@ export const useFidget = create<FidgetUI>((set, get) => ({
       return;
     }
     set({ titleTaps: taps, lastTitleTap: now });
+  },
+  setMagnetSize: (magnetSize) => {
+    try {
+      window.localStorage.setItem(SIZE_KEY, magnetSize);
+    } catch {
+      /* ignore */
+    }
+    set({ magnetSize });
   },
 }));
