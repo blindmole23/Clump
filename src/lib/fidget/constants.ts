@@ -20,12 +20,25 @@ export const MAGNET_REFORM = 1.18;
 /** Seconds a broken bond refuses to reform, however close its ends drift back. */
 export const REFORM_DELAY = 10;
 
+/** Resistance while you're actively dragging — the "clay pulling back" feel. */
 export const HOME_ACTIVE = 0.055;
-export const HOME_IDLE = 0.38;
-export const IDLE_AFTER = 1.15;
-export const IDLE_RAMP = 3.2;
+
+/**
+ * Magnetic homing for anything you're NOT holding. This is a hard-range,
+ * constant-speed pull, not a spring: outside MAGNET_RANGE_BLOCKS a piece
+ * holds its position forever (out of the magnet's reach); inside it, once
+ * MAGNET_DELAY seconds pass with no interaction, it creeps home at exactly
+ * MAGNET_PULL_SPEED block-widths per second.
+ */
+export const MAGNET_DELAY = 5;
+export const MAGNET_RANGE_BLOCKS = 10;
+export const MAGNET_PULL_SPEED = 1;
 
 export const GRAB_RADIUS = 0.62;
 export const SCREEN_MARGIN = 0.08;
+
+/** World-space bias applied to the camera's look target so the clump sits
+ * left of center, leaving open space on the right to pull chunks into. */
+export const CLUMP_SCREEN_OFFSET = 1.1;
 
 export const GUN_UNLOCK_TAPS = 7;

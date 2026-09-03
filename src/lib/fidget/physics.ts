@@ -1,10 +1,10 @@
 import {
   BOND_STIFFNESS,
   HOME_ACTIVE,
-  HOME_IDLE,
-  IDLE_AFTER,
-  IDLE_RAMP,
   MAGNET_BREAK,
+  MAGNET_DELAY,
+  MAGNET_PULL_SPEED,
+  MAGNET_RANGE_BLOCKS,
   MAGNET_REFORM,
   OVERLAP,
   PBD_ITERS,
@@ -134,12 +134,11 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
     state;
   const dt = p.dt;
   const spacing = VOXEL_SPACING;
-  const idleT = Math.max(0, p.idleFor - IDLE_AFTER);
-  const idleK = p.interacting
-    ? 0
-    : Math.min(1, idleT / IDLE_RAMP);
-  const home = HOME_ACTIVE + (HOME_IDLE - HOME_ACTIVE) * idleK * idleK;
-  const friction = p.interacting ? 0.14 : 0.22 + idleK * 0.45;
+  // The "clay" resistance spring only runs while you're actively dragging.
+  // Idle homing is handled separately below as a hard-range, constant-speed
+  // magnetic pull instead of a spring, so it never applies here.
+  const home = p.interacting ? HOME_ACTIVE : 0;
+  const friction = p.interacting ? 0.14 : 0.22;
   const damp = Math.pow(1 - friction, dt * 60);
 
   for (let i = 0; i < n; i++) {
@@ -236,6 +235,10 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
 
   resolveOverlaps(state, spacing * OVERLAP);
 
+  if (!p.interacting) {
+    applyMagneticPull(state, p.idleFor, dt);
+  }
+
   const limit = p.worldRadius;
   const limit2 = limit * limit;
   for (let i = 0; i < n; i++) {
@@ -260,6 +263,38 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
   }
 
   return snaps;
+}
+
+/**
+ * Idle-only magnetic homing. Unlike a spring, this is a hard range limit at
+ * constant speed: past MAGNET_RANGE_BLOCKS block-widths from its rest slot a
+ * particle holds its position forever (out of the magnet's reach); inside
+ * that range, once MAGNET_DELAY seconds have passed with no interaction, it
+ * creeps home at exactly MAGNET_PULL_SPEED block-widths per second.
+ */
+export function applyMagneticPull(
+  state: FidgetState,
+  idleFor: number,
+  dt: number,
+) {
+  if (idleFor < MAGNET_DELAY) return;
+  const { n, pos, rest, grabWeight } = state;
+  const rangeWorld = MAGNET_RANGE_BLOCKS * VOXEL_SPACING;
+  const stepWorld = MAGNET_PULL_SPEED * VOXEL_SPACING * dt;
+  for (let i = 0; i < n; i++) {
+    if (grabWeight[i]! > 0.2) continue;
+    const i3 = i * 3;
+    const dx = rest[i3]! - pos[i3]!;
+    const dy = rest[i3 + 1]! - pos[i3 + 1]!;
+    const dz = rest[i3 + 2]! - pos[i3 + 2]!;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-6 || dist > rangeWorld) continue;
+    const step = Math.min(dist, stepWorld);
+    const inv = step / dist;
+    pos[i3] = pos[i3]! + dx * inv;
+    pos[i3 + 1] = pos[i3 + 1]! + dy * inv;
+    pos[i3 + 2] = pos[i3 + 2]! + dz * inv;
+  }
 }
 
 function resolveOverlaps(state: FidgetState, minDist: number) {

@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import {
+  CLUMP_SCREEN_OFFSET,
   GRAB_RADIUS,
+  MAGNET_DELAY,
   SCREEN_MARGIN,
   VOXEL_SIZE,
   VOXEL_SPACING,
@@ -105,6 +107,7 @@ export class FidgetEngine {
   private mat: THREE.MeshPhongMaterial;
   private ndcClamp = new THREE.Vector3();
   private shapePull = 0;
+  private lookTarget = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement, hooks: EngineHooks) {
     this.canvas = canvas;
@@ -577,7 +580,7 @@ export class FidgetEngine {
     if (!this.interacting) this.idleFor += dt;
     else this.idleFor = 0;
 
-    const rec = !this.interacting && this.idleFor > 1.25;
+    const rec = !this.interacting && this.idleFor > MAGNET_DELAY;
     if (rec !== this.recovering) {
       this.recovering = rec;
       this.hooks.onRecovering(rec);
@@ -619,7 +622,18 @@ export class FidgetEngine {
     const z = Math.cos(yaw) * Math.cos(pitch) * dist;
     this.tmp.set(x, y, z);
     this.camera.position.lerp(this.tmp, 1 - Math.exp(-8 * dt));
-    this.camera.lookAt(0, 0, 0);
+    // Aim slightly to the camera's own right (not straight at the clump) so
+    // the clump renders left-of-center, leaving open space on the right to
+    // pull chunks into — this tracks the current yaw so it holds as the
+    // camera auto-orbits.
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+    this.lookTarget.set(
+      rightX * CLUMP_SCREEN_OFFSET,
+      0,
+      rightZ * CLUMP_SCREEN_OFFSET,
+    );
+    this.camera.lookAt(this.lookTarget);
     this.camera.up.set(0, 1, 0);
   }
 
