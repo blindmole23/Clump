@@ -8,6 +8,7 @@ import {
   MAGNET_REFORM,
   OVERLAP,
   PBD_ITERS,
+  REFORM_DELAY,
   VOXEL_SPACING,
 } from "./constants";
 import type { Bond, FidgetState } from "./types";
@@ -49,7 +50,7 @@ export function buildBonds(rest: Float32Array, n: number): Bond[] {
       const ry = rest[j * 3 + 1]! - y;
       const rz = rest[j * 3 + 2]! - z;
       const restLen = Math.hypot(rx, ry, rz);
-      bonds.push({ a: i, b: j, rest: restLen, live: 1 });
+      bonds.push({ a: i, b: j, rest: restLen, live: 1, cooldown: 0 });
     }
   }
   return bonds;
@@ -114,7 +115,10 @@ export function resetToRest(state: FidgetState) {
   state.prev.set(state.rest);
   state.pulse.fill(0);
   state.grabWeight.fill(0);
-  for (const b of state.bonds) b.live = 1;
+  for (const b of state.bonds) {
+    b.live = 1;
+    b.cooldown = 0;
+  }
 }
 
 export type StepParams = {
@@ -180,10 +184,15 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
       if (bond.live) {
         if (d > breakDist) {
           bond.live = 0;
+          bond.cooldown = REFORM_DELAY;
           continue;
         }
       } else {
-        if (d < reformDist) {
+        // Cooldown ticks once per frame, not once per PBD sub-iteration.
+        if (iter === 0 && bond.cooldown > 0) {
+          bond.cooldown = Math.max(0, bond.cooldown - dt);
+        }
+        if (bond.cooldown <= 0 && d < reformDist) {
           bond.live = 1;
           snaps++;
         } else {

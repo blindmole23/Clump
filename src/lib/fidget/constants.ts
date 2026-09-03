@@ -14,8 +14,11 @@ export const VOXEL_SIZE = 0.208;
 export const PBD_ITERS = 7;
 export const BOND_STIFFNESS = 0.78;
 export const OVERLAP = 0.9;
-export const MAGNET_BREAK = 3.4;
+// Was 3.4 — pulled in 25% so chunks split off sooner.
+export const MAGNET_BREAK = 2.55;
 export const MAGNET_REFORM = 1.18;
+/** Seconds a broken bond refuses to reform, however close its ends drift back. */
+export const REFORM_DELAY = 10;
 
 export const HOME_ACTIVE = 0.055;
 export const HOME_IDLE = 0.38;

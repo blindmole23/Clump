@@ -26,6 +26,8 @@ export type Bond = {
   b: number;
   rest: number;
   live: number;
+  /** Seconds left before a broken bond is eligible to reform, regardless of distance. */
+  cooldown: number;
 };
 
 export type Tool = {
