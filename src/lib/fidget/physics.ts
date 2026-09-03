@@ -244,7 +244,9 @@ export function stepPhysics(state: FidgetState, p: StepParams): number {
     const y = pos[i3 + 1]!;
     const z = pos[i3 + 2]!;
     const d2 = x * x + y * y + z * z;
-    if (d2 > limit2) {
+    // A held block must never be yanked out of your hand — only clamp what
+    // isn't currently grabbed (matches the exemption the home-spring uses).
+    if (d2 > limit2 && grabWeight[i]! <= 0.2) {
       const s = limit / Math.sqrt(d2);
       pos[i3] = x * s;
       pos[i3 + 1] = y * s;
