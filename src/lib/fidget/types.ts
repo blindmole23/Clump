@@ -4,6 +4,21 @@ export type ShapeId = "lump" | "gun";
 
 export type MagnetSize = "small" | "medium" | "large";
 
+/**
+ * Floaty: zero-g, magnetic homing, auto-orbit camera (the original mode).
+ * Trough: real gravity, enclosed 8-wide x 48-long box, no homing/spin.
+ * Plane: real gravity, enclosed 64x64 open-top floor, no homing/spin.
+ */
+export type Mode = "floaty" | "trough" | "plane";
+
+export type ModeInfo = { id: Mode; label: string };
+
+export const MODES: ModeInfo[] = [
+  { id: "floaty", label: "Floaty" },
+  { id: "trough", label: "Trough" },
+  { id: "plane", label: "Plane" },
+];
+
 export type Cell = {
   gx: number;
   gy: number;

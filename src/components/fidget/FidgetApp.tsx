@@ -10,6 +10,7 @@ export function FidgetApp() {
   const tool = useFidget((s) => s.tool);
   const muted = useFidget((s) => s.muted);
   const magnetSize = useFidget((s) => s.magnetSize);
+  const mode = useFidget((s) => s.mode);
   const gunUnlocked = useFidget((s) => s.gunUnlocked);
   const setRecovering = useFidget((s) => s.setRecovering);
   const setVoxelCount = useFidget((s) => s.setVoxelCount);
@@ -71,6 +72,10 @@ export function FidgetApp() {
   }, [magnetSize]);
 
   useEffect(() => {
+    engineRef.current?.setMode(mode);
+  }, [mode]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
       if (e.code === "Digit1") setTool("hand");
@@ -89,8 +94,11 @@ export function FidgetApp() {
         start();
         engineRef.current?.pokeCenter();
       } else if (e.code === "KeyB") {
-        const buf = ((window as unknown as { __clumpKeys?: string }).__clumpKeys ?? "") + "b";
-        (window as unknown as { __clumpKeys?: string }).__clumpKeys = buf.slice(-8);
+        // Dev/testing aid: reveals the Trough/Plane container as a wireframe.
+        // No-op in floaty mode, which has no box to show.
+        engineRef.current?.toggleBoundary();
+      } else if (e.code === "KeyC") {
+        engineRef.current?.cycleCamera();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -128,6 +136,7 @@ export function FidgetApp() {
           const next = useFidget.getState().shape;
           engineRef.current?.morphTo(next);
         }}
+        onCycleCamera={() => engineRef.current?.cycleCamera()}
       />
       <span className="sr-only">
         {gunUnlocked ? "gun unlocked" : "clump fidget"}

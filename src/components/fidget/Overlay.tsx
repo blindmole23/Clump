@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Camera,
   Circle,
   Crosshair,
   Hand,
@@ -14,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { setMuted as setAudioMuted, unlockAudio } from "@/lib/fidget/audio";
 import { useFidget } from "@/lib/fidget/store";
-import { TOOLS, type MagnetSize, type ToolId } from "@/lib/fidget/types";
+import { MODES, TOOLS, type MagnetSize, type ToolId } from "@/lib/fidget/types";
 import { cn } from "@/lib/utils";
 
 const SIZES: { id: MagnetSize; label: string }[] = [
@@ -35,9 +36,10 @@ const ICONS: Record<ToolId, typeof Hand> = {
 type OverlayProps = {
   onReset: () => void;
   onMorphGun: () => void;
+  onCycleCamera: () => void;
 };
 
-export function Overlay({ onReset, onMorphGun }: OverlayProps) {
+export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
   const started = useFidget((s) => s.started);
   const start = useFidget((s) => s.start);
   const tool = useFidget((s) => s.tool);
@@ -53,6 +55,8 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
   const setShape = useFidget((s) => s.setShape);
   const magnetSize = useFidget((s) => s.magnetSize);
   const setMagnetSize = useFidget((s) => s.setMagnetSize);
+  const mode = useFidget((s) => s.mode);
+  const setMode = useFidget((s) => s.setMode);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const tools = gunUnlocked
@@ -102,6 +106,16 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
               </p>
             </button>
             <div className="pointer-events-auto relative flex gap-1">
+              {mode !== "floaty" ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Cycle camera angle"
+                  onClick={onCycleCamera}
+                >
+                  <Camera className="size-5" strokeWidth={1.75} />
+                </Button>
+              ) : null}
               <Button
                 variant="ghost"
                 size="icon"
@@ -159,6 +173,22 @@ export function Overlay({ onReset, onMorphGun }: OverlayProps) {
               ) : null}
             </div>
           </header>
+
+          <div className="pointer-events-auto mx-auto mt-3 flex gap-1 rounded-2xl border border-border bg-surface/90 p-1" aria-label="Play area">
+            {MODES.map((m) => (
+              <Button
+                key={m.id}
+                variant="dock"
+                size="md"
+                className="h-8 px-3 text-xs"
+                data-active={mode === m.id}
+                aria-pressed={mode === m.id}
+                onClick={() => setMode(m.id)}
+              >
+                {m.label}
+              </Button>
+            ))}
+          </div>
 
           <div className="flex-1" />
 

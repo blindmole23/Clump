@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { GUN_UNLOCK_TAPS } from "./constants";
 import { playUnlock } from "./audio";
-import type { MagnetSize, ShapeId, ToolId } from "./types";
+import type { MagnetSize, Mode, ShapeId, ToolId } from "./types";
 
 const GUN_KEY = "clump.gunUnlocked";
 const SIZE_KEY = "clump.magnetSize";
@@ -37,8 +37,10 @@ type FidgetUI = {
   titleTaps: number;
   lastTitleTap: number;
   magnetSize: MagnetSize;
+  mode: Mode;
   start: () => void;
   setTool: (tool: ToolId) => void;
+  setMode: (mode: Mode) => void;
   setRecovering: (v: boolean) => void;
   setMuted: (v: boolean) => void;
   setVoxelCount: (n: number) => void;
@@ -61,11 +63,13 @@ export const useFidget = create<FidgetUI>((set, get) => ({
   titleTaps: 0,
   lastTitleTap: 0,
   magnetSize: readMagnetSize(),
+  mode: "floaty",
   start: () => set({ started: true }),
   setTool: (tool) => {
     if (tool === "gun" && !get().gunUnlocked) return;
     set({ tool });
   },
+  setMode: (mode) => set({ mode }),
   setRecovering: (recovering) => set({ recovering }),
   setMuted: (muted) => set({ muted }),
   setVoxelCount: (voxelCount) => set({ voxelCount }),

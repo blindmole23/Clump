@@ -4,9 +4,11 @@
  * stays well under a 16ms frame. 216 is a classic neodymium cube (6³);
  * a rounded lump lands ~240-300.
  */
-export const TARGET_VOXELS = 260;
+/** Gun easter-egg shape's minimum voxel count (see shapes.ts buildGun). */
 export const VOXEL_MIN = 220;
-export const VOXEL_MAX = 320;
+
+/** Floaty mode's default shape: a solid cube, CUBE_SIZE balls to an edge. */
+export const CUBE_SIZE = 8;
 
 export const VOXEL_SPACING = 0.24;
 export const BALL_RADIUS = VOXEL_SPACING * 0.52;
@@ -78,3 +80,18 @@ export const MAGNET_SIZE_SCALE: Record<"small" | "medium" | "large", number> = {
 export const CLUMP_SCREEN_OFFSET = 1.1;
 
 export const GUN_UNLOCK_TAPS = 7;
+
+/**
+ * Gravity-mode play areas (Trough, Plane). Both are enclosed boxes: the
+ * clump falls, bounces off the floor/walls, and stays inside — no magnetic
+ * homing or auto-orbit spin, those are floaty-mode-only concepts.
+ */
+export const GRAVITY = 6; // world units / s^2, tuned for a snappy but readable fall
+export const BOUNCE = 0.22; // fraction of impact speed reflected off a wall/floor
+
+export const TROUGH_WIDTH_BALLS = 8;
+export const TROUGH_HEIGHT_BALLS = 8;
+export const TROUGH_LENGTH_BALLS = 48;
+
+export const PLANE_SIZE_BALLS = 64;
+export const PLANE_HEIGHT_BALLS = 16; // walls only, open top

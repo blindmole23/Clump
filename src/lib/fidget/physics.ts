@@ -9,7 +9,6 @@ import {
   MAGNET_RANGE,
   MAGNET_SPEED,
   PACKING_DIST,
-  PLAY_RADIUS,
   SOLVER_ITERATIONS,
   VOXEL_SPACING,
 } from "./constants";
@@ -23,8 +22,17 @@ export function buildBonds(rest: Float32Array, n: number): Bond[] {
   const bonds: Bond[] = [];
   const bucket = new Map<string, number>();
   const q = VOXEL_SPACING;
+  // Round at double resolution (2x) rather than 1x. A shape with an even
+  // edge length (an 8-wide cube, say) centers its grid on exact half-integer
+  // multiples of the spacing — and Math.round(x/q) then sits exactly on a
+  // .5 rounding knife-edge, where sub-ULP floating-point noise between the
+  // additions used to look up a neighbor and the multiplication used to
+  // place it can round to different integers and silently drop the bond.
+  // Multiplying by 2 first turns every valid grid coordinate (integer or
+  // half-integer) into an exact integer, giving a full 1.0 margin instead
+  // of a knife-edge.
   const key = (x: number, y: number, z: number) =>
-    `${Math.round(x / q)}|${Math.round(y / q)}|${Math.round(z / q)}`;
+    `${Math.round((2 * x) / q)}|${Math.round((2 * y) / q)}|${Math.round((2 * z) / q)}`;
 
   for (let i = 0; i < n; i++) {
     bucket.set(key(rest[i * 3]!, rest[i * 3 + 1]!, rest[i * 3 + 2]!), i);
@@ -122,9 +130,41 @@ export function resetToRest(state: FidgetState) {
   }
 }
 
+/**
+ * Sphere: floaty mode's world-space play area (see PLAY_RADIUS).
+ * Box: an enclosed axis-aligned box (Trough, Plane) — a floor at floorY, an
+ * optional ceiling, and walls at +/-halfX and +/-halfZ. `bounce` is the
+ * fraction of impact speed reflected back, so 0 is "sticks on contact" and
+ * values near 1 are "keeps bouncing".
+ */
+export type Containment =
+  | { kind: "sphere"; radius: number }
+  | {
+      kind: "box";
+      halfX: number;
+      halfZ: number;
+      floorY: number;
+      ceilY: number | null;
+      bounce: number;
+    };
+
 export type StepParams = {
   dt: number;
   interacting: boolean;
+  /** World units/s^2 applied along -Y to non-held particles. 0 = zero-g. */
+  gravity: number;
+  /** Idle group homing back to the main clump — a floaty-only concept. */
+  magnetHoming: boolean;
+  /**
+   * Whether the drag-resistance spring and strain tinting pull toward the
+   * shape's absolute spawn-time rest position. That's right for floaty mode,
+   * where the clump always lives at the origin — but under gravity the whole
+   * clump physically settles wherever it falls, so "distance from spawn
+   * position" stops meaning "stretched" and starts meaning "wherever gravity
+   * put it," fighting the fall instead of resisting a drag.
+   */
+  elasticHome: boolean;
+  containment: Containment;
 };
 
 export type StepResult = {
@@ -138,7 +178,7 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
   const { n, pos, rest, strain, bonds } = state;
   const dt = p.dt;
 
-  integrate(state, dt, p.interacting);
+  integrate(state, dt, p.interacting, p.gravity);
 
   // Which particles share a connected group with anything currently grabbed,
   // however loosely — drag resistance below must only ever touch material
@@ -147,29 +187,34 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
   const preClusters = computeClusters(bonds, n);
   const inHeldGroup = groupMask(n, preClusters, (i) => isHeld(state, i));
 
-  const { snaps } = solveBonds(state, dt, p.interacting, inHeldGroup);
+  const { snaps } = solveBonds(state, dt, p.interacting && p.elasticHome, inHeldGroup);
   resolveOverlaps(state, PACKING_DIST);
 
   const clusters = computeClusters(bonds, n);
-  applyGroupMagneticPull(state, clusters, dt);
-  applyContainment(state);
+  if (p.magnetHoming) applyGroupMagneticPull(state, clusters, dt);
+  applyContainment(state, p.containment);
 
-  const spacing = VOXEL_SPACING;
-  for (let i = 0; i < n; i++) {
-    const i3 = i * 3;
-    const dx = pos[i3]! - rest[i3]!;
-    const dy = pos[i3 + 1]! - rest[i3 + 1]!;
-    const dz = pos[i3 + 2]! - rest[i3 + 2]!;
-    strain[i] = Math.min(1, Math.hypot(dx, dy, dz) / (spacing * 3.2));
+  if (p.elasticHome) {
+    const spacing = VOXEL_SPACING;
+    for (let i = 0; i < n; i++) {
+      const i3 = i * 3;
+      const dx = pos[i3]! - rest[i3]!;
+      const dy = pos[i3 + 1]! - rest[i3 + 1]!;
+      const dz = pos[i3 + 2]! - rest[i3 + 2]!;
+      strain[i] = Math.min(1, Math.hypot(dx, dy, dz) / (spacing * 3.2));
+    }
+  } else {
+    strain.fill(0);
   }
 
   return { snaps, hasDetached: clusters.length > 1 };
 }
 
-function integrate(state: FidgetState, dt: number, interacting: boolean) {
+function integrate(state: FidgetState, dt: number, interacting: boolean, gravity: number) {
   const { n, pos, prev, grabWeight, grabTarget, pulse, idleFor } = state;
   const friction = interacting ? 0.14 : 0.22;
   const damp = Math.pow(1 - friction, dt * 60);
+  const gdt2 = gravity * dt * dt;
   for (let i = 0; i < n; i++) {
     const i3 = i * 3;
     if (isHeld(state, i)) {
@@ -188,7 +233,7 @@ function integrate(state: FidgetState, dt: number, interacting: boolean) {
       prev[i3 + 2] = pos[i3 + 2]!;
     } else {
       const vx = (pos[i3]! - prev[i3]!) * damp;
-      const vy = (pos[i3 + 1]! - prev[i3 + 1]!) * damp;
+      const vy = (pos[i3 + 1]! - prev[i3 + 1]!) * damp - gdt2;
       const vz = (pos[i3 + 2]! - prev[i3 + 2]!) * damp;
       prev[i3] = pos[i3]!;
       prev[i3 + 1] = pos[i3 + 1]!;
@@ -396,27 +441,61 @@ export function applyGroupMagneticPull(state: FidgetState, clusters: number[][],
 }
 
 /**
- * The one and only containment mechanism: a world-space sphere every
- * particle is pulled back inside. No projection math, so nothing here can
- * ever be numerically unstable the way a screen-space clamp is at grazing
- * angles — it's a plain distance check.
+ * The one and only containment mechanism: a world-space shape (sphere or
+ * box) every particle is kept inside. No projection math, so nothing here
+ * can ever be numerically unstable the way a screen-space clamp is at
+ * grazing angles — it's a plain distance/bounds check.
  */
-function applyContainment(state: FidgetState) {
-  const { n, pos } = state;
-  const limit2 = PLAY_RADIUS * PLAY_RADIUS;
+function applyContainment(state: FidgetState, c: Containment) {
+  const { n, pos, prev } = state;
+  if (c.kind === "sphere") {
+    const limit2 = c.radius * c.radius;
+    for (let i = 0; i < n; i++) {
+      // A held block must never be yanked out of your hand.
+      if (isHeld(state, i)) continue;
+      const i3 = i * 3;
+      const x = pos[i3]!;
+      const y = pos[i3 + 1]!;
+      const z = pos[i3 + 2]!;
+      const d2 = x * x + y * y + z * z;
+      if (d2 <= limit2) continue;
+      const s = c.radius / Math.sqrt(d2);
+      pos[i3] = x * s;
+      pos[i3 + 1] = y * s;
+      pos[i3 + 2] = z * s;
+    }
+    return;
+  }
+
   for (let i = 0; i < n; i++) {
-    // A held block must never be yanked out of your hand.
     if (isHeld(state, i)) continue;
     const i3 = i * 3;
-    const x = pos[i3]!;
-    const y = pos[i3 + 1]!;
-    const z = pos[i3 + 2]!;
-    const d2 = x * x + y * y + z * z;
-    if (d2 <= limit2) continue;
-    const s = PLAY_RADIUS / Math.sqrt(d2);
-    pos[i3] = x * s;
-    pos[i3 + 1] = y * s;
-    pos[i3 + 2] = z * s;
+    bounceAxis(pos, prev, i3, -c.halfX, c.halfX, c.bounce);
+    bounceAxis(pos, prev, i3 + 1, c.floorY, c.ceilY ?? Infinity, c.bounce);
+    bounceAxis(pos, prev, i3 + 2, -c.halfZ, c.halfZ, c.bounce);
+  }
+}
+
+/** Clamp one axis of one particle to [lo, hi], reflecting its inferred
+ * Verlet velocity (pos - prev) back by `bounce` so a wall/floor hit looks
+ * like an impact rather than the particle just sticking dead in place. */
+function bounceAxis(
+  pos: Float32Array,
+  prev: Float32Array,
+  idx: number,
+  lo: number,
+  hi: number,
+  bounce: number,
+) {
+  const p = pos[idx]!;
+  if (p < lo) {
+    const v = p - prev[idx]!;
+    pos[idx] = lo;
+    prev[idx] = lo + v * bounce;
+  } else if (p > hi) {
+    const v = p - prev[idx]!;
+    pos[idx] = hi;
+    prev[idx] = hi + v * bounce;
   }
 }
 

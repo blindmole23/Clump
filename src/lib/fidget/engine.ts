@@ -2,11 +2,20 @@ import * as THREE from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import {
   BALL_RADIUS,
+  BOUNCE,
   CAMERA_DIST_BASE,
   CLUMP_SCREEN_OFFSET,
+  CUBE_SIZE,
   GRAB_RADIUS,
+  GRAVITY,
   MAGNET_DELAY,
   MAGNET_SIZE_SCALE,
+  PLANE_HEIGHT_BALLS,
+  PLANE_SIZE_BALLS,
+  PLAY_RADIUS,
+  TROUGH_HEIGHT_BALLS,
+  TROUGH_LENGTH_BALLS,
+  TROUGH_WIDTH_BALLS,
   VOXEL_SPACING,
 } from "./constants";
 import {
@@ -19,8 +28,9 @@ import {
   rematchRest,
   resetToRest,
   stepPhysics,
+  type Containment,
 } from "./physics";
-import { buildGun, buildLump, cellsToRest } from "./shapes";
+import { buildCube, buildGun, cellsToRest } from "./shapes";
 import {
   playGun,
   playPoke,
@@ -30,7 +40,7 @@ import {
   resumeAudioIfNeeded,
   unlockAudio,
 } from "./audio";
-import type { FidgetState, MagnetSize, ShapeId, ToolId } from "./types";
+import type { FidgetState, MagnetSize, Mode, ShapeId, ToolId } from "./types";
 
 export type EngineHooks = {
   onRecovering: (v: boolean) => void;
@@ -110,6 +120,11 @@ export class FidgetEngine {
   private mat: THREE.MeshStandardMaterial;
   private envTexture: THREE.Texture;
   private shapePull = 0;
+  private mode: Mode = "floaty";
+  private containment: Containment = { kind: "sphere", radius: PLAY_RADIUS };
+  private cameraPresetIndex = 0;
+  private boundaryMesh: THREE.LineSegments | null = null;
+  private showBoundary = false;
 
   constructor(canvas: HTMLCanvasElement, hooks: EngineHooks) {
     this.canvas = canvas;
@@ -118,7 +133,7 @@ export class FidgetEngine {
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    const rest = cellsToRest(buildLump(), VOXEL_SPACING);
+    const rest = cellsToRest(buildCube(CUBE_SIZE), VOXEL_SPACING);
     this.state = createState(rest);
     hooks.onVoxelCount(this.state.n);
 
@@ -208,13 +223,149 @@ export class FidgetEngine {
     this.muted = v;
   }
 
+  setMode(mode: Mode) {
+    this.mode = mode;
+    this.containment = this.containmentFor(mode);
+    this.cameraPresetIndex = 0;
+    this.dropIntoMode();
+    this.updateBoundaryMesh();
+    this.placeCamera(0, true);
+    // The floating drop-shadow disc is a floaty-only illusion; the gravity
+    // modes have a real floor (and, in Trough, real walls) instead.
+    this.shadow.visible = mode === "floaty";
+    // Fog was tuned for floaty mode's ~4-unit camera distance around a small
+    // clump. Trough/Plane cameras sit much farther back to frame a much
+    // bigger play area, so the same fog distances would fade the whole scene
+    // to nothing before the camera preset ever got there.
+    const fog = this.scene.fog as THREE.Fog;
+    if (mode === "floaty") {
+      fog.near = 6.5;
+      fog.far = 12;
+    } else {
+      fog.near = 14;
+      fog.far = 26;
+    }
+    this.trauma = 0;
+    this.shapePull = 0;
+    this.interacting = false;
+    this.hasDetached = false;
+    this.idleFor = 0;
+    if (this.recovering) {
+      this.recovering = false;
+      this.hooks.onRecovering(false);
+    }
+  }
+
+  /** Cycle to the next fixed camera angle. A no-op in floaty mode, which
+   * keeps its own auto-orbit instead of manual angles. */
+  cycleCamera() {
+    if (this.mode === "floaty") return;
+    const presets = this.cameraPresets(this.mode);
+    this.cameraPresetIndex = (this.cameraPresetIndex + 1) % presets.length;
+  }
+
+  /** Dev/testing aid: the Trough and Plane containers are invisible to a
+   * player during normal play, but this reveals their bounds as a wireframe
+   * so the box dimensions can be checked visually. */
+  toggleBoundary() {
+    this.showBoundary = !this.showBoundary;
+    if (this.boundaryMesh) this.boundaryMesh.visible = this.showBoundary;
+  }
+
+  private containmentFor(mode: Mode): Containment {
+    if (mode === "floaty") return { kind: "sphere", radius: PLAY_RADIUS };
+    if (mode === "trough") {
+      return {
+        kind: "box",
+        halfX: (TROUGH_WIDTH_BALLS * VOXEL_SPACING) / 2,
+        halfZ: (TROUGH_LENGTH_BALLS * VOXEL_SPACING) / 2,
+        floorY: 0,
+        ceilY: TROUGH_HEIGHT_BALLS * VOXEL_SPACING,
+        bounce: BOUNCE,
+      };
+    }
+    const half = (PLANE_SIZE_BALLS * VOXEL_SPACING) / 2;
+    return { kind: "box", halfX: half, halfZ: half, floorY: 0, ceilY: null, bounce: BOUNCE };
+  }
+
+  /** Re-seeds the clump above the container's floor so switching into a
+   * gravity mode (or resetting inside one) reads as a visible drop, rather
+   * than the cube just appearing already resting on the ground. */
+  private dropIntoMode() {
+    resetToRest(this.state);
+    const c = this.containment;
+    if (c.kind !== "box") return;
+    const halfCube = ((CUBE_SIZE - 1) / 2) * VOXEL_SPACING;
+    const dropClearance = 1.4;
+    const offsetY = c.floorY + halfCube + dropClearance;
+    for (let i = 0; i < this.state.n; i++) {
+      this.state.pos[i * 3 + 1] = this.state.pos[i * 3 + 1]! + offsetY;
+      this.state.prev[i * 3 + 1] = this.state.prev[i * 3 + 1]! + offsetY;
+    }
+  }
+
+  private cameraPresets(
+    mode: Mode,
+  ): { pos: [number, number, number]; look: [number, number, number]; up: [number, number, number] }[] {
+    const Y_UP: [number, number, number] = [0, 1, 0];
+    // A camera looking near-straight down has its view direction parallel to
+    // the default (0,1,0) up vector, which makes lookAt's basis degenerate —
+    // THREE then picks an arbitrary roll, which is what produced the "diamond
+    // rotated 45 degrees" top-down shots. Tilting up toward -Z instead of
+    // straight up avoids ever being parallel to a purely vertical view.
+    const TOP_DOWN_UP: [number, number, number] = [0, 0, -1];
+
+    if (mode === "trough") {
+      const halfX = (TROUGH_WIDTH_BALLS * VOXEL_SPACING) / 2;
+      const halfZ = (TROUGH_LENGTH_BALLS * VOXEL_SPACING) / 2;
+      const h = TROUGH_HEIGHT_BALLS * VOXEL_SPACING;
+      return [
+        { pos: [halfX * 2.4, h * 2.1, halfZ * 1.2], look: [0, h * 0.3, 0], up: Y_UP },
+        // Eye-level, straight-on: the trough itself has no visible walls
+        // (that's the point — the boundary is only a felt one, revealed on
+        // demand by the debug wireframe), so a "down the length" shot has
+        // nothing to anchor it visually. A close, level front view is the
+        // more useful second angle instead.
+        { pos: [halfX * 4.5, h * 0.55, halfX * 4.5], look: [0, h * 0.3, 0], up: Y_UP },
+        { pos: [0.001, halfZ * 1.05, 0.001], look: [0, h * 0.4, 0], up: TOP_DOWN_UP },
+      ];
+    }
+    const half = (PLANE_SIZE_BALLS * VOXEL_SPACING) / 2;
+    const wallH = PLANE_HEIGHT_BALLS * VOXEL_SPACING;
+    return [
+      { pos: [half * 0.5, half * 0.48, half * 0.5], look: [0, wallH * 0.2, 0], up: Y_UP },
+      { pos: [0.001, half * 1.1, 0.001], look: [0, wallH * 0.4, 0], up: TOP_DOWN_UP },
+      { pos: [half * 0.28, wallH * 0.9, half * 0.28], look: [0, wallH * 0.25, 0], up: Y_UP },
+    ];
+  }
+
+  private updateBoundaryMesh() {
+    if (this.boundaryMesh) {
+      this.scene.remove(this.boundaryMesh);
+      this.boundaryMesh.geometry.dispose();
+      (this.boundaryMesh.material as THREE.Material).dispose();
+      this.boundaryMesh = null;
+    }
+    const c = this.containment;
+    if (c.kind !== "box") return;
+    const height = c.ceilY != null ? c.ceilY - c.floorY : PLANE_HEIGHT_BALLS * VOXEL_SPACING;
+    const box = new THREE.BoxGeometry(c.halfX * 2, height, c.halfZ * 2);
+    const edges = new THREE.EdgesGeometry(box);
+    box.dispose();
+    const mat = new THREE.LineBasicMaterial({ color: 0x4dffe0, transparent: true, opacity: 0.55 });
+    this.boundaryMesh = new THREE.LineSegments(edges, mat);
+    this.boundaryMesh.position.set(0, c.floorY + height / 2, 0);
+    this.boundaryMesh.visible = this.showBoundary;
+    this.scene.add(this.boundaryMesh);
+  }
+
   setMagnetSize(size: MagnetSize) {
     this.camDist = CAMERA_DIST_BASE * MAGNET_SIZE_SCALE[size];
   }
 
   morphTo(shape: ShapeId) {
     this.shape = shape;
-    const cells = shape === "gun" ? buildGun() : buildLump();
+    const cells = shape === "gun" ? buildGun() : buildCube(CUBE_SIZE);
     const rest = cellsToRest(cells, VOXEL_SPACING);
     rematchRest(this.state, padRest(rest, this.state.n));
     const palette = shape === "gun" ? GUNMETAL : CLAY;
@@ -231,7 +382,7 @@ export class FidgetEngine {
 
   reset() {
     this.clearPointers();
-    resetToRest(this.state);
+    this.dropIntoMode();
     playReset();
     this.idleFor = 4;
     this.trauma = 0.08;
@@ -263,6 +414,10 @@ export class FidgetEngine {
     (this.shadow.material as THREE.Material).dispose();
     this.shadow.geometry.dispose();
     this.mesh.dispose();
+    if (this.boundaryMesh) {
+      this.boundaryMesh.geometry.dispose();
+      (this.boundaryMesh.material as THREE.Material).dispose();
+    }
     this.renderer.dispose();
   }
 
@@ -560,21 +715,28 @@ export class FidgetEngine {
     // Detached-piece framing: the auto-orbit swings anything off-origin
     // around the clump, so pause it while a piece is loose and resume once
     // everything's reformed. Uses last frame's cluster count — this frame's
-    // is only known after stepPhysics runs, one line down.
-    if (!this.reducedMotion && !this.interacting && !this.hasDetached) {
+    // is only known after stepPhysics runs, one line down. Only floaty mode
+    // auto-orbits at all; Trough/Plane use fixed angles the player cycles.
+    if (this.mode === "floaty" && !this.reducedMotion && !this.interacting && !this.hasDetached) {
       this.camYaw += dt * 0.12;
     }
     this.placeCamera(dt);
 
+    const floaty = this.mode === "floaty";
     const { snaps, hasDetached } = stepPhysics(this.state, {
       dt,
       interacting: this.interacting && this.shapePull < 0.15,
+      gravity: floaty ? 0 : GRAVITY,
+      magnetHoming: floaty,
+      elasticHome: floaty,
+      containment: this.containment,
     });
     this.hasDetached = hasDetached;
     this.shapePull *= Math.exp(-0.55 * dt);
     if (snaps > 0) playSnap(snaps);
 
-    const rec = !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
+    // "Remembering" (idle magnetic homing) only exists in floaty mode.
+    const rec = floaty && !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
     if (rec !== this.recovering) {
       this.recovering = rec;
       this.hooks.onRecovering(rec);
@@ -584,11 +746,22 @@ export class FidgetEngine {
     this.flash.intensity *= Math.exp(-8 * dt);
 
     this.syncInstances();
-    this.updateShadow();
+    if (floaty) this.updateShadow();
     this.renderer.render(this.scene, this.camera);
   };
 
   private placeCamera(dt: number, instant = false) {
+    if (this.mode !== "floaty") {
+      const preset = this.cameraPresets(this.mode)[this.cameraPresetIndex]!;
+      this.tmp.set(preset.pos[0], preset.pos[1], preset.pos[2]);
+      if (instant) this.camera.position.copy(this.tmp);
+      else this.camera.position.lerp(this.tmp, 1 - Math.exp(-8 * dt));
+      this.camera.up.set(preset.up[0], preset.up[1], preset.up[2]);
+      this.lookTarget.set(preset.look[0], preset.look[1], preset.look[2]);
+      this.camera.lookAt(this.lookTarget);
+      return;
+    }
+
     const yaw = this.camYaw;
     const pitch = this.camPitch;
     const dist = this.camDist;

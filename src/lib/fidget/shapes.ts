@@ -1,10 +1,5 @@
-import { TARGET_VOXELS, VOXEL_MAX, VOXEL_MIN } from "./constants";
+import { VOXEL_MIN } from "./constants";
 import type { Cell } from "./types";
-
-function hash3(x: number, y: number, z: number): number {
-  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
-  return s - Math.floor(s);
-}
 
 function unique(cells: Cell[]): Cell[] {
   const seen = new Set<string>();
@@ -57,44 +52,17 @@ function addBox(
   }
 }
 
-function generateLump(thresh: number): Cell[] {
+export function buildCube(size: number): Cell[] {
   const cells: Cell[] = [];
-  const R = 5;
-  for (let gx = -R; gx <= R; gx++) {
-    for (let gy = -R; gy <= R; gy++) {
-      for (let gz = -R; gz <= R; gz++) {
-        const fx = gx * 1.0;
-        const fy = gy * 1.08;
-        const fz = gz * 0.96;
-        const d2 = fx * fx + fy * fy + fz * fz;
-        const n = (hash3(gx, gy, gz) - 0.5) * 3.2;
-        const bump =
-          Math.sin(gx * 1.3 + gz * 0.7) * Math.cos(gy * 1.1) * 1.4;
-        if (d2 < thresh + n + bump) cells.push({ gx, gy, gz });
+  const half = (size - 1) / 2;
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      for (let z = 0; z < size; z++) {
+        cells.push({ gx: x - half, gy: y - half, gz: z - half });
       }
     }
   }
-  return unique(cells);
-}
-
-export function buildLump(): Cell[] {
-  let thresh = 16.2;
-  let cells = generateLump(thresh);
-  for (let i = 0; i < 12; i++) {
-    if (cells.length < VOXEL_MIN) thresh += 1.1;
-    else if (cells.length > VOXEL_MAX) thresh -= 1.1;
-    else break;
-    cells = generateLump(thresh);
-  }
-  if (cells.length > VOXEL_MAX) {
-    cells.sort(
-      (a, b) =>
-        a.gx * a.gx + a.gy * a.gy + a.gz * a.gz -
-        (b.gx * b.gx + b.gy * b.gy + b.gz * b.gz),
-    );
-    cells = cells.slice(0, TARGET_VOXELS);
-  }
-  return center(cells);
+  return cells;
 }
 
 export function buildGun(): Cell[] {
