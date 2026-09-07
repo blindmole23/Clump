@@ -11,6 +11,7 @@ export function FidgetApp() {
   const muted = useFidget((s) => s.muted);
   const magnetSize = useFidget((s) => s.magnetSize);
   const mode = useFidget((s) => s.mode);
+  const gravityLevel = useFidget((s) => s.gravityLevel);
   const gunUnlocked = useFidget((s) => s.gunUnlocked);
   const setRecovering = useFidget((s) => s.setRecovering);
   const setVoxelCount = useFidget((s) => s.setVoxelCount);
@@ -74,6 +75,10 @@ export function FidgetApp() {
   useEffect(() => {
     engineRef.current?.setMode(mode);
   }, [mode]);
+
+  useEffect(() => {
+    engineRef.current?.setGravityLevel(gravityLevel);
+  }, [gravityLevel]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -15,13 +15,19 @@ import {
 import { Button } from "@/components/ui/button";
 import { setMuted as setAudioMuted, unlockAudio } from "@/lib/fidget/audio";
 import { useFidget } from "@/lib/fidget/store";
-import { MODES, TOOLS, type MagnetSize, type ToolId } from "@/lib/fidget/types";
+import { MODES, TOOLS, type GravityLevel, type MagnetSize, type ToolId } from "@/lib/fidget/types";
 import { cn } from "@/lib/utils";
 
 const SIZES: { id: MagnetSize; label: string }[] = [
   { id: "small", label: "Small" },
   { id: "medium", label: "Medium" },
   { id: "large", label: "Large" },
+];
+
+const GRAVITY_LEVELS: { id: GravityLevel; label: string }[] = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
 ];
 
 const ICONS: Record<ToolId, typeof Hand> = {
@@ -57,6 +63,8 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
   const setMagnetSize = useFidget((s) => s.setMagnetSize);
   const mode = useFidget((s) => s.mode);
   const setMode = useFidget((s) => s.setMode);
+  const gravityLevel = useFidget((s) => s.gravityLevel);
+  const setGravityLevel = useFidget((s) => s.setGravityLevel);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const tools = gunUnlocked
@@ -169,18 +177,77 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
                       </Button>
                     ))}
                   </div>
+                  {mode !== "floaty" ? (
+                    <>
+                      <p className="mt-3 text-xs tracking-wide text-subtle">
+                        Gravity
+                      </p>
+                      <div className="mt-2 flex gap-1 rounded-xl border border-border bg-bg/40 p-1">
+                        {GRAVITY_LEVELS.map((g) => (
+                          <Button
+                            key={g.id}
+                            variant="dock"
+                            size="md"
+                            className="h-9 flex-1 px-0 text-xs"
+                            data-active={gravityLevel === g.id}
+                            aria-pressed={gravityLevel === g.id}
+                            onClick={() => setGravityLevel(g.id)}
+                          >
+                            {g.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           </header>
 
-          <div className="pointer-events-auto mx-auto mt-3 flex gap-1 rounded-2xl border border-border bg-surface/90 p-1" aria-label="Play area">
+          {/* Tools: vertical rail, out of the way on the left. */}
+          <nav
+            className="pointer-events-auto absolute left-[max(0.75rem,env(safe-area-inset-left))] top-1/2 flex -translate-y-1/2 flex-col gap-1 rounded-2xl border border-border bg-surface/90 p-1.5"
+            aria-label="Tools"
+          >
+            {tools.map((t) => {
+              const Icon = ICONS[t.id];
+              const active = tool === t.id;
+              return (
+                <Button
+                  key={t.id}
+                  variant="dock"
+                  size="icon"
+                  data-active={active}
+                  aria-label={t.label}
+                  aria-pressed={active}
+                  onClick={() => {
+                    if (t.id === "gun" && gunUnlocked && tool === "gun") {
+                      const next = shape === "gun" ? "lump" : "gun";
+                      setShape(next);
+                      onMorphGun();
+                      return;
+                    }
+                    setTool(t.id);
+                  }}
+                  title={t.label}
+                >
+                  <Icon className="size-5" strokeWidth={1.75} />
+                </Button>
+              );
+            })}
+          </nav>
+
+          {/* Modes: vertical rail, out of the way on the right. */}
+          <div
+            className="pointer-events-auto absolute right-[max(0.75rem,env(safe-area-inset-right))] top-1/2 flex -translate-y-1/2 flex-col gap-1 rounded-2xl border border-border bg-surface/90 p-1"
+            aria-label="Play area"
+          >
             {MODES.map((m) => (
               <Button
                 key={m.id}
                 variant="dock"
                 size="md"
-                className="h-8 px-3 text-xs"
+                className="h-9 w-14 px-0 text-xs"
                 data-active={mode === m.id}
                 aria-pressed={mode === m.id}
                 onClick={() => setMode(m.id)}
@@ -192,7 +259,7 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
 
           <div className="flex-1" />
 
-          <div className="relative flex flex-col items-center gap-3 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+          <div className="relative flex flex-col items-center gap-1.5 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
             <p
               className={cn(
                 "absolute -top-6 text-center text-xs tracking-wide text-muted transition-opacity duration-500",
@@ -206,38 +273,6 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
               <p className="text-xs tracking-wide text-fg/80">{toast}</p>
             ) : null}
             <p className="text-center text-xs text-subtle">{activeHint}</p>
-
-            <nav
-              className="pointer-events-auto flex items-center gap-1 rounded-2xl border border-border bg-surface/90 p-1.5"
-              aria-label="Tools"
-            >
-              {tools.map((t) => {
-                const Icon = ICONS[t.id];
-                const active = tool === t.id;
-                return (
-                  <Button
-                    key={t.id}
-                    variant="dock"
-                    size="icon"
-                    data-active={active}
-                    aria-label={t.label}
-                    aria-pressed={active}
-                    onClick={() => {
-                      if (t.id === "gun" && gunUnlocked && tool === "gun") {
-                        const next = shape === "gun" ? "lump" : "gun";
-                        setShape(next);
-                        onMorphGun();
-                        return;
-                      }
-                      setTool(t.id);
-                    }}
-                    title={t.label}
-                  >
-                    <Icon className="size-5" strokeWidth={1.75} />
-                  </Button>
-                );
-              })}
-            </nav>
             {voxelCount > 0 ? (
               <p className="font-sans text-[10px] tabular-nums tracking-widest text-subtle">
                 {voxelCount} magnets

@@ -597,17 +597,86 @@ export function applyImpulse(
   }
 }
 
-export function applyPlaneSmear(
+/**
+ * Punches a hard-edged cylindrical hole through the clump along a ray — a
+ * binary radius cutoff, not a falloff, so the hole has a clean wall instead
+ * of tapering back to full density. Any particle inside the cylinder is
+ * snapped straight to just outside it (with a little residual outward
+ * velocity for a "kicked clear" feel) rather than nudged proportionally, so
+ * dragging the ray through the clump reads as cutting a tunnel rather than
+ * denting it.
+ */
+export function carveHole(
+  state: FidgetState,
+  origin: [number, number, number],
+  dir: [number, number, number],
+  radius: number,
+) {
+  const { n, pos, prev, pulse, bonds } = state;
+  const [ox, oy, oz] = origin;
+  const [dx, dy, dz] = dir;
+  const inHole = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3;
+    const px = pos[i3]! - ox;
+    const py = pos[i3 + 1]! - oy;
+    const pz = pos[i3 + 2]! - oz;
+    const along = px * dx + py * dy + pz * dz;
+    if (along < -0.2) continue;
+    const qx = px - dx * along;
+    const qy = py - dy * along;
+    const qz = pz - dz * along;
+    const d = Math.hypot(qx, qy, qz);
+    if (d >= radius) continue;
+    inHole[i] = 1;
+    if (d < 1e-5) continue;
+    // Push well clear of the boundary, not just barely past it — the cut
+    // material is severed from its neighbors below, so nothing pulls it back
+    // and it needs to actually separate visibly, not just nudge aside and
+    // sit flush against the tunnel wall.
+    const push = (radius * 2.6 - d) / d;
+    pos[i3] = pos[i3]! + qx * push;
+    pos[i3 + 1] = pos[i3 + 1]! + qy * push;
+    pos[i3 + 2] = pos[i3 + 2]! + qz * push;
+    prev[i3] = prev[i3]! + qx * push * 0.6;
+    prev[i3 + 1] = prev[i3 + 1]! + qy * push * 0.6;
+    prev[i3 + 2] = prev[i3 + 2]! + qz * push * 0.6;
+    pulse[i] = 1;
+  }
+  // "Split the mass": a cut severs connections outright. Just relocating the
+  // punched-out material isn't enough — its displacement is usually well
+  // under BOND_BREAK_DIST, so without this the ordinary elastic bond
+  // correction would pull it right back and heal the hole within a few
+  // frames instead of leaving a lasting cut.
+  for (const bond of bonds) {
+    if (bond.live && (inHole[bond.a] || inHole[bond.b])) {
+      bond.live = 0;
+      bond.cooldown = BOND_REFORM_DELAY;
+    }
+  }
+}
+
+/**
+ * Scrapes a flat blade edge (like a credit card) across the clump: a
+ * rectangular strip — `halfLength` long each way along `bladeAxis`, capped
+ * to `thickness` in the perpendicular sweep direction — rather than the
+ * circular area applyPlaneSmear used. `bladeAxis` and `normal` should be
+ * mutually perpendicular unit vectors.
+ */
+export function applyLineSmear(
   state: FidgetState,
   point: [number, number, number],
   normal: [number, number, number],
+  bladeAxis: [number, number, number],
   smear: [number, number, number],
-  radius: number,
+  halfLength: number,
+  thickness: number,
   flatten: number,
 ) {
   const { n, pos, grabWeight } = state;
   const [px, py, pz] = point;
   const [nx, ny, nz] = normal;
+  const [bx, by, bz] = bladeAxis;
   const [sx, sy, sz] = smear;
   for (let i = 0; i < n; i++) {
     if (grabWeight[i]! > HELD_EPS) continue;
@@ -615,13 +684,21 @@ export function applyPlaneSmear(
     const dx = pos[i3]! - px;
     const dy = pos[i3 + 1]! - py;
     const dz = pos[i3 + 2]! - pz;
-    const d = Math.hypot(dx, dy, dz);
-    if (d > radius) continue;
-    const w = 1 - d / radius;
-    const dist = dx * nx + dy * ny + dz * nz;
-    pos[i3] = pos[i3]! - nx * dist * flatten * w + sx * w;
-    pos[i3 + 1] = pos[i3 + 1]! - ny * dist * flatten * w + sy * w;
-    pos[i3 + 2] = pos[i3 + 2]! - nz * dist * flatten * w + sz * w;
+    const along = dx * bx + dy * by + dz * bz;
+    if (Math.abs(along) > halfLength) continue;
+    const distN = dx * nx + dy * ny + dz * nz;
+    // Perpendicular in-plane distance from the blade's centerline: strip out
+    // both the along-blade and along-normal components, what's left is the
+    // sweep-direction offset.
+    const perpX = dx - bx * along - nx * distN;
+    const perpY = dy - by * along - ny * distN;
+    const perpZ = dz - bz * along - nz * distN;
+    const perp = Math.hypot(perpX, perpY, perpZ);
+    if (perp > thickness) continue;
+    const w = 1 - perp / thickness;
+    pos[i3] = pos[i3]! - nx * distN * flatten * w + sx * w;
+    pos[i3 + 1] = pos[i3 + 1]! - ny * distN * flatten * w + sy * w;
+    pos[i3 + 2] = pos[i3 + 2]! - nz * distN * flatten * w + sz * w;
   }
 }
 

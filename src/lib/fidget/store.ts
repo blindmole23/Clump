@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { GUN_UNLOCK_TAPS } from "./constants";
 import { playUnlock } from "./audio";
-import type { MagnetSize, Mode, ShapeId, ToolId } from "./types";
+import type { GravityLevel, MagnetSize, Mode, ShapeId, ToolId } from "./types";
 
 const GUN_KEY = "clump.gunUnlocked";
 const SIZE_KEY = "clump.magnetSize";
+const GRAVITY_KEY = "clump.gravityLevel";
 
 function readGunUnlocked(): boolean {
   if (typeof window === "undefined") return false;
@@ -25,6 +26,16 @@ function readMagnetSize(): MagnetSize {
   }
 }
 
+function readGravityLevel(): GravityLevel {
+  if (typeof window === "undefined") return "low";
+  try {
+    const v = window.localStorage.getItem(GRAVITY_KEY);
+    return v === "low" || v === "medium" || v === "high" ? v : "low";
+  } catch {
+    return "low";
+  }
+}
+
 type FidgetUI = {
   started: boolean;
   tool: ToolId;
@@ -38,9 +49,11 @@ type FidgetUI = {
   lastTitleTap: number;
   magnetSize: MagnetSize;
   mode: Mode;
+  gravityLevel: GravityLevel;
   start: () => void;
   setTool: (tool: ToolId) => void;
   setMode: (mode: Mode) => void;
+  setGravityLevel: (level: GravityLevel) => void;
   setRecovering: (v: boolean) => void;
   setMuted: (v: boolean) => void;
   setVoxelCount: (n: number) => void;
@@ -64,12 +77,21 @@ export const useFidget = create<FidgetUI>((set, get) => ({
   lastTitleTap: 0,
   magnetSize: readMagnetSize(),
   mode: "floaty",
+  gravityLevel: readGravityLevel(),
   start: () => set({ started: true }),
   setTool: (tool) => {
     if (tool === "gun" && !get().gunUnlocked) return;
     set({ tool });
   },
   setMode: (mode) => set({ mode }),
+  setGravityLevel: (gravityLevel) => {
+    try {
+      window.localStorage.setItem(GRAVITY_KEY, gravityLevel);
+    } catch {
+      /* ignore */
+    }
+    set({ gravityLevel });
+  },
   setRecovering: (recovering) => set({ recovering }),
   setMuted: (muted) => set({ muted }),
   setVoxelCount: (voxelCount) => set({ voxelCount }),

@@ -4,6 +4,9 @@ export type ShapeId = "lump" | "gun";
 
 export type MagnetSize = "small" | "medium" | "large";
 
+/** Trough/Plane gravity strength, set in Settings alongside magnet size. */
+export type GravityLevel = "low" | "medium" | "high";
+
 /**
  * Floaty: zero-g, magnetic homing, auto-orbit camera (the original mode).
  * Trough: real gravity, enclosed 8-wide x 48-long box, no homing/spin.

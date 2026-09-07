@@ -62,6 +62,15 @@ export const PLAY_RADIUS = 3.4;
 
 export const GRAB_RADIUS = 0.62;
 
+/** Spike: punches a hard-edged cylindrical hole clean through the clump —
+ * about 2 balls wide — rather than a soft radial impulse. */
+export const HOLE_RADIUS = VOXEL_SPACING * 1.0;
+
+/** Trowel: an 8-ball-long flat blade edge (like a credit card) that scrapes
+ * across the surface, rather than a circular smear. */
+export const SCRAPE_HALF_LENGTH = VOXEL_SPACING * 4;
+export const SCRAPE_THICKNESS = VOXEL_SPACING * 1.1;
+
 /**
  * On-screen magnet size. There's no web API for a device's true physical
  * DPI (deliberately — browsers don't expose it), so this is a camera-zoom
@@ -95,3 +104,11 @@ export const TROUGH_LENGTH_BALLS = 48;
 
 export const PLANE_SIZE_BALLS = 64;
 export const PLANE_HEIGHT_BALLS = 16; // walls only, open top
+
+/** Gravity strength multiplier for Trough/Plane, set in Settings alongside
+ * magnet size. Low is the original tuned feel; Medium/High scale it up. */
+export const GRAVITY_SCALE: Record<"low" | "medium" | "high", number> = {
+  low: 1,
+  medium: 1.33,
+  high: 2,
+};

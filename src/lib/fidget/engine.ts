@@ -8,11 +8,15 @@ import {
   CUBE_SIZE,
   GRAB_RADIUS,
   GRAVITY,
+  GRAVITY_SCALE,
+  HOLE_RADIUS,
   MAGNET_DELAY,
   MAGNET_SIZE_SCALE,
   PLANE_HEIGHT_BALLS,
   PLANE_SIZE_BALLS,
   PLAY_RADIUS,
+  SCRAPE_HALF_LENGTH,
+  SCRAPE_THICKNESS,
   TROUGH_HEIGHT_BALLS,
   TROUGH_LENGTH_BALLS,
   TROUGH_WIDTH_BALLS,
@@ -20,8 +24,9 @@ import {
 } from "./constants";
 import {
   applyImpulse,
-  applyPlaneSmear,
+  applyLineSmear,
   applyScoop,
+  carveHole,
   closestToRay,
   collectGrab,
   createState,
@@ -40,7 +45,7 @@ import {
   resumeAudioIfNeeded,
   unlockAudio,
 } from "./audio";
-import type { FidgetState, MagnetSize, Mode, ShapeId, ToolId } from "./types";
+import type { FidgetState, GravityLevel, MagnetSize, Mode, ShapeId, ToolId } from "./types";
 
 export type EngineHooks = {
   onRecovering: (v: boolean) => void;
@@ -125,6 +130,7 @@ export class FidgetEngine {
   private cameraPresetIndex = 0;
   private boundaryMesh: THREE.LineSegments | null = null;
   private showBoundary = false;
+  private gravityLevel: GravityLevel = "low";
 
   constructor(canvas: HTMLCanvasElement, hooks: EngineHooks) {
     this.canvas = canvas;
@@ -363,6 +369,10 @@ export class FidgetEngine {
     this.camDist = CAMERA_DIST_BASE * MAGNET_SIZE_SCALE[size];
   }
 
+  setGravityLevel(level: GravityLevel) {
+    this.gravityLevel = level;
+  }
+
   morphTo(shape: ShapeId) {
     this.shape = shape;
     const cells = shape === "gun" ? buildGun() : buildCube(CUBE_SIZE);
@@ -543,7 +553,7 @@ export class FidgetEngine {
       return;
     }
 
-    this.strokeTool(point, ray.dir, 1, [0, 0, 0], true);
+    this.strokeTool(point, ray.dir, 1, [0, 0, 0], true, ray.origin);
     playPoke(0.7);
     haptic(this.muted, 10);
   };
@@ -584,7 +594,7 @@ export class FidgetEngine {
 
     const ray = this.pointerRay(e.clientX, e.clientY);
     const dist = Math.hypot(dx, dy);
-    this.strokeTool(planePt, ray.dir, Math.min(1.6, 0.35 + dist * 0.02), smear, false);
+    this.strokeTool(planePt, ray.dir, Math.min(1.6, 0.35 + dist * 0.02), smear, false, ray.origin);
   };
 
   private onUp = (e: PointerEvent) => {
@@ -647,19 +657,50 @@ export class FidgetEngine {
     amount: number,
     smear: [number, number, number],
     tap: boolean,
+    rayOrigin: [number, number, number],
   ) {
     const nd = Math.hypot(dir[0], dir[1], dir[2]) || 1;
     const d: [number, number, number] = [dir[0] / nd, dir[1] / nd, dir[2] / nd];
     if (this.tool === "spike") {
-      applyImpulse(this.state, point, d, 0.26, tap ? 0.22 : 0.07 * amount, 0.85);
+      // A hard-edged cylindrical hole, not a proportional impulse — tap or
+      // drag both punch the same clean 2-ball-wide tunnel; dragging through
+      // the clump just carves it further along the path. Carved from the
+      // ray's true origin (near the camera), not the clicked-on surface
+      // point: closestToRay picks whichever particle has the smallest
+      // perpendicular offset from the ray, which for a straight-through shot
+      // can be one buried deep inside the clump rather than the front-most
+      // one — starting the cylinder there would exclude everything nearer
+      // the camera than that point, cutting only the hidden back half.
+      carveHole(this.state, rayOrigin, d, HOLE_RADIUS);
     } else if (this.tool === "trowel") {
       this.camera.getWorldDirection(this.camDir);
-      applyPlaneSmear(
+      const cx = this.camDir.x;
+      const cy = this.camDir.y;
+      const cz = this.camDir.z;
+      const smearLen = Math.hypot(smear[0], smear[1], smear[2]);
+      let bx: number, by: number, bz: number;
+      if (smearLen > 1e-4) {
+        // The blade's edge runs perpendicular to the wipe direction, like
+        // the edge of a card dragged sideways through the clump.
+        bx = cy * smear[2] - cz * smear[1];
+        by = cz * smear[0] - cx * smear[2];
+        bz = cx * smear[1] - cy * smear[0];
+      } else {
+        // No movement yet (a tap): default to the camera's own right axis.
+        const m = this.camera.matrixWorld.elements;
+        bx = m[0]!;
+        by = m[1]!;
+        bz = m[2]!;
+      }
+      const bn = Math.hypot(bx, by, bz) || 1;
+      applyLineSmear(
         this.state,
         point,
-        [this.camDir.x, this.camDir.y, this.camDir.z],
+        [cx, cy, cz],
+        [bx / bn, by / bn, bz / bn],
         [smear[0] * 0.85, smear[1] * 0.85, smear[2] * 0.85],
-        0.58,
+        SCRAPE_HALF_LENGTH,
+        SCRAPE_THICKNESS,
         tap ? 0.35 : 0.22,
       );
     } else if (this.tool === "loop") {
@@ -726,7 +767,7 @@ export class FidgetEngine {
     const { snaps, hasDetached } = stepPhysics(this.state, {
       dt,
       interacting: this.interacting && this.shapePull < 0.15,
-      gravity: floaty ? 0 : GRAVITY,
+      gravity: floaty ? 0 : GRAVITY * GRAVITY_SCALE[this.gravityLevel],
       magnetHoming: floaty,
       elasticHome: floaty,
       containment: this.containment,
