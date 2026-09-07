@@ -1,13 +1,12 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import {
+  BALL_RADIUS,
   CAMERA_DIST_BASE,
   CLUMP_SCREEN_OFFSET,
   GRAB_RADIUS,
   MAGNET_DELAY,
   MAGNET_SIZE_SCALE,
-  SCREEN_MARGIN,
-  VOXEL_SIZE,
   VOXEL_SPACING,
 } from "./constants";
 import {
@@ -104,14 +103,13 @@ export class FidgetEngine {
   private camDir = new THREE.Vector3();
   private origin = new THREE.Vector3();
   private tmp = new THREE.Vector3();
+  private lookTarget = new THREE.Vector3();
   private lastStretchAt = 0;
   private muted = false;
   private geom: THREE.BufferGeometry;
   private mat: THREE.MeshStandardMaterial;
   private envTexture: THREE.Texture;
-  private ndcClamp = new THREE.Vector3();
   private shapePull = 0;
-  private lookTarget = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement, hooks: EngineHooks) {
     this.canvas = canvas;
@@ -153,10 +151,7 @@ export class FidgetEngine {
 
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.1, 30);
     // Snap straight to the steady-state orbit position/framing instead of a
-    // mismatched fixed point the render loop then has to lerp away from —
-    // during that lerp the camera briefly looks at the wrong framing, and
-    // clampToDisplay (running from frame 1) would "correct" particles for
-    // that wrong framing hard enough to snap bonds permanently.
+    // mismatched fixed point the render loop then has to lerp away from.
     this.placeCamera(0, true);
 
     const hemi = new THREE.HemisphereLight(0xf0e6d8, 0x1a1612, 0.72);
@@ -188,7 +183,7 @@ export class FidgetEngine {
 
     // Low segment counts on purpose — this is one geometry instanced ~260
     // times, and a shiny sphere reads as smooth well before 16x12 segments.
-    this.geom = new THREE.SphereGeometry(VOXEL_SIZE * 0.52, 14, 10);
+    this.geom = new THREE.SphereGeometry(BALL_RADIUS, 14, 10);
     this.mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       metalness: 0.92,
@@ -434,13 +429,7 @@ export class FidgetEngine {
 
     const ray = this.pointerRay(e.clientX, e.clientY);
     const dist = Math.hypot(dx, dy);
-    this.strokeTool(
-      planePt,
-      ray.dir,
-      Math.min(1.6, 0.35 + dist * 0.02),
-      smear,
-      false,
-    );
+    this.strokeTool(planePt, ray.dir, Math.min(1.6, 0.35 + dist * 0.02), smear, false);
   };
 
   private onUp = (e: PointerEvent) => {
@@ -520,20 +509,11 @@ export class FidgetEngine {
       );
     } else if (this.tool === "loop") {
       this.camera.getWorldDirection(this.camDir);
-      applyScoop(
-        this.state,
-        point,
-        [this.camDir.x, this.camDir.y, this.camDir.z],
-        0.7,
-        tap ? 0.08 : 0.035 * amount,
-      );
+      applyScoop(this.state, point, [this.camDir.x, this.camDir.y, this.camDir.z], 0.7, tap ? 0.08 : 0.035 * amount);
     }
   }
 
-  private fireGun(
-    point: [number, number, number],
-    dir: [number, number, number],
-  ) {
+  private fireGun(point: [number, number, number], dir: [number, number, number]) {
     applyImpulse(this.state, point, dir, 0.5, 0.42, 0.7);
     playGun();
     this.trauma = Math.min(1, this.trauma + 0.7);
@@ -555,74 +535,18 @@ export class FidgetEngine {
     };
   }
 
-  private intersectPlane(
-    clientX: number,
-    clientY: number,
-  ): [number, number, number] {
+  private intersectPlane(clientX: number, clientY: number): [number, number, number] {
     const rect = this.canvas.getBoundingClientRect();
     this.ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.ndc, this.camera);
     this.camera.getWorldDirection(this.camDir);
-    this.hitPlane.setFromNormalAndCoplanarPoint(
-      this.camDir,
-      this.origin.set(0, 0, 0),
-    );
+    this.hitPlane.setFromNormalAndCoplanarPoint(this.camDir, this.origin.set(0, 0, 0));
     const ok = this.raycaster.ray.intersectPlane(this.hitPlane, this.planeHit);
     if (!ok) {
-      this.planeHit
-        .copy(this.raycaster.ray.origin)
-        .addScaledVector(this.raycaster.ray.direction, this.camDist);
+      this.planeHit.copy(this.raycaster.ray.origin).addScaledVector(this.raycaster.ray.direction, this.camDist);
     }
     return [this.planeHit.x, this.planeHit.y, this.planeHit.z];
-  }
-
-  private clampToDisplay(dt: number) {
-    // Forward projection (world -> NDC) is always numerically stable, so it's
-    // still how we detect "has this drifted off-screen." What used to happen
-    // next — clamping the NDC coordinate and calling .unproject() to get a
-    // world position back — is NOT stable: at grazing angles, or once a
-    // point is anywhere near or behind the camera's view plane, that inverse
-    // transform can round-trip to a wildly different world position than
-    // the one that went in. That was the "random teleport" bug. Instead,
-    // once something's detected off-screen, just ease it toward the world
-    // origin (where the clump actually lives) in world space — never invert
-    // the projection at all. Pulling toward lookTarget instead of the origin
-    // was an earlier version of this fix and a bug in its own right: the
-    // camera deliberately AIMS away from the clump's real position (that's
-    // what puts it left-of-center on screen), so nudging particles toward
-    // that aim point pulled them away from where the lump's own bonds were
-    // trying to hold them — a slow-motion version of the exact instability
-    // this function exists to prevent.
-    const m = SCREEN_MARGIN;
-    const { n, pos, grabWeight } = this.state;
-    const t = 1 - Math.exp(-5 * dt);
-    for (let i = 0; i < n; i++) {
-      if (grabWeight[i]! > 0.55) continue;
-      const i3 = i * 3;
-      this.ndcClamp.set(pos[i3]!, pos[i3 + 1]!, pos[i3 + 2]!);
-      this.ndcClamp.project(this.camera);
-      // x/y margins do the real "stay visible" work. z only needs to catch
-      // pathological depth (behind the camera, or corrupted) -- the whole
-      // lump's normal depth range sits within a few hundredths of 1 (far
-      // plane) at this camera distance, so anything tighter than that
-      // flags ordinary, correctly-placed particles as "off-screen" every
-      // single frame.
-      const outOfBounds =
-        !Number.isFinite(this.ndcClamp.x) ||
-        !Number.isFinite(this.ndcClamp.y) ||
-        !Number.isFinite(this.ndcClamp.z) ||
-        this.ndcClamp.x > 1 - m ||
-        this.ndcClamp.x < -1 + m ||
-        this.ndcClamp.y > 1 - m ||
-        this.ndcClamp.y < -1 + m ||
-        this.ndcClamp.z > 0.999 ||
-        this.ndcClamp.z < -1;
-      if (!outOfBounds) continue;
-      pos[i3] = pos[i3]! - pos[i3]! * t;
-      pos[i3 + 1] = pos[i3 + 1]! - pos[i3 + 1]! * t;
-      pos[i3 + 2] = pos[i3 + 2]! - pos[i3 + 2]! * t;
-    }
   }
 
   private tick = (now: number) => {
@@ -633,10 +557,10 @@ export class FidgetEngine {
     if (!this.interacting) this.idleFor += dt;
     else this.idleFor = 0;
 
-    // Detached-piece framing (option b): the auto-orbit swings anything
-    // off-origin around the clump, so pause it while a piece is loose and
-    // resume once everything's reformed. Uses last frame's cluster count —
-    // this frame's is only known after stepPhysics runs, one line down.
+    // Detached-piece framing: the auto-orbit swings anything off-origin
+    // around the clump, so pause it while a piece is loose and resume once
+    // everything's reformed. Uses last frame's cluster count — this frame's
+    // is only known after stepPhysics runs, one line down.
     if (!this.reducedMotion && !this.interacting && !this.hasDetached) {
       this.camYaw += dt * 0.12;
     }
@@ -645,13 +569,10 @@ export class FidgetEngine {
     const { snaps, hasDetached } = stepPhysics(this.state, {
       dt,
       interacting: this.interacting && this.shapePull < 0.15,
-      worldRadius: 3.4,
-      reducedMotion: this.reducedMotion,
     });
     this.hasDetached = hasDetached;
     this.shapePull *= Math.exp(-0.55 * dt);
     if (snaps > 0) playSnap(snaps);
-    this.clampToDisplay(dt);
 
     const rec = !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
     if (rec !== this.recovering) {
@@ -689,11 +610,7 @@ export class FidgetEngine {
     // camera auto-orbits.
     const rightX = Math.cos(yaw);
     const rightZ = -Math.sin(yaw);
-    this.lookTarget.set(
-      rightX * CLUMP_SCREEN_OFFSET,
-      0,
-      rightZ * CLUMP_SCREEN_OFFSET,
-    );
+    this.lookTarget.set(rightX * CLUMP_SCREEN_OFFSET, 0, rightZ * CLUMP_SCREEN_OFFSET);
     this.camera.lookAt(this.lookTarget);
     this.camera.up.set(0, 1, 0);
   }
@@ -718,11 +635,7 @@ export class FidgetEngine {
     const sx = Math.max(0.8, (maxX - minX) * 0.7 + 0.4);
     const sz = Math.max(0.8, (maxZ - minZ) * 0.7 + 0.4);
     this.shadow.scale.set(sx, sz, 1);
-    this.shadow.position.set(
-      (minX + maxX) * 0.5,
-      Math.min(-1.35, minY - 0.45),
-      (minZ + maxZ) * 0.5,
-    );
+    this.shadow.position.set((minX + maxX) * 0.5, Math.min(-1.35, minY - 0.45), (minZ + maxZ) * 0.5);
     (this.shadow.material as THREE.MeshBasicMaterial).opacity =
       0.18 + 0.12 * (1 - Math.min(1, (maxX - minX + maxZ - minZ) / 6));
   }

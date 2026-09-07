@@ -1,24 +1,23 @@
 import {
+  BOND_BREAK_DIST,
+  BOND_REFORM_DELAY,
+  BOND_REFORM_DIST,
   BOND_STIFFNESS,
-  GRAB_HELD_EPS,
-  HOME_ACTIVE,
-  MAGNET_BREAK,
+  DRAG_RESISTANCE,
+  HELD_EPS,
   MAGNET_DELAY,
-  MAGNET_PULL_SPEED,
-  MAGNET_RANGE_BLOCKS,
-  MAGNET_REFORM,
-  OVERLAP,
-  PBD_ITERS,
-  REFORM_DELAY,
+  MAGNET_RANGE,
+  MAGNET_SPEED,
+  PACKING_DIST,
+  PLAY_RADIUS,
+  SOLVER_ITERATIONS,
   VOXEL_SPACING,
 } from "./constants";
 import type { Bond, FidgetState } from "./types";
 
-const TMP = {
-  nx: 0,
-  ny: 0,
-  nz: 0,
-};
+function isHeld(state: FidgetState, i: number): boolean {
+  return state.grabWeight[i]! > HELD_EPS;
+}
 
 export function buildBonds(rest: Float32Array, n: number): Bond[] {
   const bonds: Bond[] = [];
@@ -31,6 +30,8 @@ export function buildBonds(rest: Float32Array, n: number): Bond[] {
     bucket.set(key(rest[i * 3]!, rest[i * 3 + 1]!, rest[i * 3 + 2]!), i);
   }
 
+  // Only the six forward-facing lattice directions are needed: every pair of
+  // adjacent cells gets visited exactly once regardless of which one is "i".
   const dirs: [number, number, number][] = [
     [1, 0, 0],
     [0, 1, 0],
@@ -46,57 +47,52 @@ export function buildBonds(rest: Float32Array, n: number): Bond[] {
     const z = rest[i * 3 + 2]!;
     for (const [dx, dy, dz] of dirs) {
       const j = bucket.get(key(x + dx * q, y + dy * q, z + dz * q));
-      if (j == null || j <= i) continue;
+      if (j == null) continue;
       const rx = rest[j * 3]! - x;
       const ry = rest[j * 3 + 1]! - y;
       const rz = rest[j * 3 + 2]! - z;
-      const restLen = Math.hypot(rx, ry, rz);
-      bonds.push({ a: i, b: j, rest: restLen, live: 1, cooldown: 0 });
+      bonds.push({ a: i, b: j, rest: Math.hypot(rx, ry, rz), live: 1, cooldown: 0 });
     }
   }
   return bonds;
 }
 
+const PALETTE = [
+  [0.78, 0.42, 0.24],
+  [0.7, 0.36, 0.2],
+  [0.82, 0.5, 0.3],
+  [0.64, 0.34, 0.22],
+  [0.74, 0.46, 0.28],
+  [0.6, 0.32, 0.2],
+];
+
 export function createState(rest: Float32Array): FidgetState {
   const n = rest.length / 3;
-  const pos = new Float32Array(rest);
-  const prev = new Float32Array(rest);
-  const grabTarget = new Float32Array(rest);
-  const grabWeight = new Float32Array(n);
-  const pulse = new Float32Array(n);
-  const strain = new Float32Array(n);
-  const baseColor = new Float32Array(n * 3);
-  const idleFor = new Float32Array(n);
-
-  const clay = [
-    [0.78, 0.42, 0.24],
-    [0.7, 0.36, 0.2],
-    [0.82, 0.5, 0.3],
-    [0.64, 0.34, 0.22],
-    [0.74, 0.46, 0.28],
-    [0.6, 0.32, 0.2],
-  ];
-  for (let i = 0; i < n; i++) {
-    const c = clay[i % clay.length]!;
-    const jitter = ((i * 17) % 9) / 90;
-    baseColor[i * 3] = c[0]! + jitter;
-    baseColor[i * 3 + 1] = c[1]! + jitter * 0.4;
-    baseColor[i * 3 + 2] = c[2]!;
-  }
-
-  return {
+  const state: FidgetState = {
     n,
-    pos,
-    prev,
+    pos: new Float32Array(rest),
+    prev: new Float32Array(rest),
     rest,
-    pulse,
-    strain,
-    grabWeight,
-    grabTarget,
-    baseColor,
-    idleFor,
+    pulse: new Float32Array(n),
+    strain: new Float32Array(n),
+    grabWeight: new Float32Array(n),
+    grabTarget: new Float32Array(rest),
+    baseColor: new Float32Array(n * 3),
+    idleFor: new Float32Array(n),
     bonds: buildBonds(rest, n),
   };
+  paintPalette(state, PALETTE);
+  return state;
+}
+
+function paintPalette(state: FidgetState, palette: number[][]) {
+  for (let i = 0; i < state.n; i++) {
+    const c = palette[i % palette.length]!;
+    const jitter = ((i * 17) % 9) / 90;
+    state.baseColor[i * 3] = c[0]! + jitter;
+    state.baseColor[i * 3 + 1] = c[1]! + jitter * 0.4;
+    state.baseColor[i * 3 + 2] = c[2]!;
+  }
 }
 
 export function rematchRest(state: FidgetState, nextRest: Float32Array) {
@@ -129,8 +125,6 @@ export function resetToRest(state: FidgetState) {
 export type StepParams = {
   dt: number;
   interacting: boolean;
-  worldRadius: number;
-  reducedMotion: boolean;
 };
 
 export type StepResult = {
@@ -141,39 +135,61 @@ export type StepResult = {
 };
 
 export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
-  const {
-    n,
-    pos,
-    prev,
-    rest,
-    grabWeight,
-    grabTarget,
-    pulse,
-    strain,
-    bonds,
-    idleFor,
-  } = state;
+  const { n, pos, rest, strain, bonds } = state;
   const dt = p.dt;
-  const spacing = VOXEL_SPACING;
-  // The "clay" resistance spring only runs while you're actively dragging.
-  // Idle homing is handled separately below as a hard-range, constant-speed
-  // magnetic pull instead of a spring, so it never applies here.
-  const home = p.interacting ? HOME_ACTIVE : 0;
-  const friction = p.interacting ? 0.14 : 0.22;
-  const damp = Math.pow(1 - friction, dt * 60);
 
+  integrate(state, dt, p.interacting);
+
+  // Which particles share a connected group with anything currently grabbed,
+  // however loosely — drag resistance below must only ever touch material
+  // actually attached to what you're dragging, never an unrelated group
+  // sitting elsewhere that happens to also be ungrabbed right now.
+  const preClusters = computeClusters(bonds, n);
+  const inHeldGroup = groupMask(n, preClusters, (i) => isHeld(state, i));
+
+  const { snaps } = solveBonds(state, dt, p.interacting, inHeldGroup);
+  resolveOverlaps(state, PACKING_DIST);
+
+  const clusters = computeClusters(bonds, n);
+  applyGroupMagneticPull(state, clusters, dt);
+  applyContainment(state);
+
+  const spacing = VOXEL_SPACING;
   for (let i = 0; i < n; i++) {
     const i3 = i * 3;
-    const gx = grabWeight[i]!;
-    if (gx > 0.02) {
-      const t = 1 - Math.pow(1 - Math.min(1, gx), dt * 28);
+    const dx = pos[i3]! - rest[i3]!;
+    const dy = pos[i3 + 1]! - rest[i3 + 1]!;
+    const dz = pos[i3 + 2]! - rest[i3 + 2]!;
+    strain[i] = Math.min(1, Math.hypot(dx, dy, dz) / (spacing * 3.2));
+  }
+
+  return { snaps, hasDetached: clusters.length > 1 };
+}
+
+function integrate(state: FidgetState, dt: number, interacting: boolean) {
+  const { n, pos, prev, grabWeight, grabTarget, pulse, idleFor } = state;
+  const friction = interacting ? 0.14 : 0.22;
+  const damp = Math.pow(1 - friction, dt * 60);
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3;
+    if (isHeld(state, i)) {
+      const t = 1 - Math.pow(1 - Math.min(1, grabWeight[i]!), dt * 28);
       pos[i3] = pos[i3]! + (grabTarget[i3]! - pos[i3]!) * t;
       pos[i3 + 1] = pos[i3 + 1]! + (grabTarget[i3 + 1]! - pos[i3 + 1]!) * t;
       pos[i3 + 2] = pos[i3 + 2]! + (grabTarget[i3 + 2]! - pos[i3 + 2]!) * t;
+      // Keep prev glued to pos the whole time it's held. Otherwise prev is
+      // stale from before the grab started, and the instant grabWeight drops
+      // to 0 the very next integration step reads a "velocity" equal to the
+      // ENTIRE grab displacement (not just one frame's worth) and flings the
+      // particle off at that speed — the actual cause of released magnets
+      // scattering violently instead of simply staying put.
+      prev[i3] = pos[i3]!;
+      prev[i3 + 1] = pos[i3 + 1]!;
+      prev[i3 + 2] = pos[i3 + 2]!;
     } else {
-      let vx = (pos[i3]! - prev[i3]!) * damp;
-      let vy = (pos[i3 + 1]! - prev[i3 + 1]!) * damp;
-      let vz = (pos[i3 + 2]! - prev[i3 + 2]!) * damp;
+      const vx = (pos[i3]! - prev[i3]!) * damp;
+      const vy = (pos[i3 + 1]! - prev[i3 + 1]!) * damp;
+      const vz = (pos[i3 + 2]! - prev[i3 + 2]!) * damp;
       prev[i3] = pos[i3]!;
       prev[i3 + 1] = pos[i3 + 1]!;
       prev[i3 + 2] = pos[i3 + 2]!;
@@ -184,82 +200,80 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
     pulse[i] = pulse[i]! * Math.exp(-10 * dt);
     // Per-particle, not global: touching one group must never reset the
     // idle clock of an unrelated group sitting elsewhere on screen.
-    idleFor[i] = grabWeight[i]! > GRAB_HELD_EPS ? 0 : idleFor[i]! + dt;
+    idleFor[i] = isHeld(state, i) ? 0 : idleFor[i]! + dt;
   }
+}
 
-  // Which particles are in the same connected group as anything currently
-  // grabbed, however loosely — the drag-resistance spring below must only
-  // ever touch material actually attached to what you're dragging, never
-  // an unrelated group sitting elsewhere that happens to also be ungrabbed.
-  const preClusters = computeClusters(bonds, n);
-  const inHeldGroup = new Uint8Array(n);
-  for (const members of preClusters) {
-    let held = false;
-    for (const i of members) {
-      if (grabWeight[i]! > GRAB_HELD_EPS) {
-        held = true;
-        break;
-      }
-    }
-    if (held) for (const i of members) inHeldGroup[i] = 1;
+function groupMask(n: number, clusters: number[][], held: (i: number) => boolean): Uint8Array {
+  const mask = new Uint8Array(n);
+  for (const members of clusters) {
+    if (members.some(held)) for (const i of members) mask[i] = 1;
   }
+  return mask;
+}
 
-  const iters = dt > 1 / 42 ? 4 : PBD_ITERS;
+function solveBonds(
+  state: FidgetState,
+  dt: number,
+  interacting: boolean,
+  inHeldGroup: Uint8Array,
+): { snaps: number } {
+  const { pos, rest, bonds } = state;
+  const iters = dt > 1 / 42 ? 4 : SOLVER_ITERATIONS;
   const stiff = BOND_STIFFNESS;
-  const breakDist = MAGNET_BREAK * spacing;
-  const reformDist = MAGNET_REFORM * spacing;
   let snaps = 0;
 
   for (let iter = 0; iter < iters; iter++) {
-    for (let b = 0; b < bonds.length; b++) {
-      const bond = bonds[b]!;
+    for (const bond of bonds) {
       const a3 = bond.a * 3;
       const b3 = bond.b * 3;
-      let dx = pos[b3]! - pos[a3]!;
-      let dy = pos[b3 + 1]! - pos[a3 + 1]!;
-      let dz = pos[b3 + 2]! - pos[a3 + 2]!;
-      let d = Math.hypot(dx, dy, dz);
+      const dx = pos[b3]! - pos[a3]!;
+      const dy = pos[b3 + 1]! - pos[a3 + 1]!;
+      const dz = pos[b3 + 2]! - pos[a3 + 2]!;
+      const d = Math.hypot(dx, dy, dz);
       if (d < 1e-6) continue;
 
       if (bond.live) {
         // While both ends are under your finger (however loosely), the bond
         // between them must not break from ordinary drag lag — otherwise a
-        // multi-block grab shears itself apart internally the moment the
-        // tightly-held center outruns its loosely-held edges.
-        const bothGrabbed =
-          grabWeight[bond.a]! > GRAB_HELD_EPS && grabWeight[bond.b]! > GRAB_HELD_EPS;
-        if (d > breakDist && !bothGrabbed) {
+        // multi-block grab shears itself apart the moment its tightly-held
+        // center outruns its loosely-held edges.
+        const bothHeld = isHeld(state, bond.a) && isHeld(state, bond.b);
+        if (d > BOND_BREAK_DIST && !bothHeld) {
           bond.live = 0;
-          bond.cooldown = REFORM_DELAY;
+          bond.cooldown = BOND_REFORM_DELAY;
           continue;
         }
       } else {
-        // Cooldown ticks once per frame, not once per PBD sub-iteration.
+        // Cooldown ticks once per frame, not once per solver sub-iteration.
         if (iter === 0 && bond.cooldown > 0) {
           bond.cooldown = Math.max(0, bond.cooldown - dt);
         }
-        if (bond.cooldown <= 0 && d < reformDist) {
+        if (bond.cooldown <= 0 && d < BOND_REFORM_DIST) {
           bond.live = 1;
           snaps++;
+        } else if (d < BOND_BREAK_DIST) {
+          // Still drifting near each other post-break: a gentle pull keeps
+          // loose neighbors from wandering off before they're eligible to
+          // reform, without the stiffness of a live bond.
+          const pull = ((d - bond.rest) / d) * 0.12 * stiff;
+          const wa = isHeld(state, bond.a) ? 0.15 : 0.5;
+          const wb = isHeld(state, bond.b) ? 0.15 : 0.5;
+          pos[a3] = pos[a3]! + dx * pull * wa;
+          pos[a3 + 1] = pos[a3 + 1]! + dy * pull * wa;
+          pos[a3 + 2] = pos[a3 + 2]! + dz * pull * wa;
+          pos[b3] = pos[b3]! - dx * pull * wb;
+          pos[b3 + 1] = pos[b3 + 1]! - dy * pull * wb;
+          pos[b3 + 2] = pos[b3 + 2]! - dz * pull * wb;
+          continue;
         } else {
-          if (d < breakDist) {
-            const pull = (d - bond.rest) / d * 0.12 * stiff;
-            const wa = grabWeight[bond.a]! > 0.2 ? 0.15 : 0.5;
-            const wb = grabWeight[bond.b]! > 0.2 ? 0.15 : 0.5;
-            pos[a3] = pos[a3]! + dx * pull * wa;
-            pos[a3 + 1] = pos[a3 + 1]! + dy * pull * wa;
-            pos[a3 + 2] = pos[a3 + 2]! + dz * pull * wa;
-            pos[b3] = pos[b3]! - dx * pull * wb;
-            pos[b3 + 1] = pos[b3 + 1]! - dy * pull * wb;
-            pos[b3 + 2] = pos[b3 + 2]! - dz * pull * wb;
-          }
           continue;
         }
       }
 
       const corr = ((d - bond.rest) / d) * stiff;
-      const wa = grabWeight[bond.a]! > 0.25 ? 0.08 : 0.5;
-      const wb = grabWeight[bond.b]! > 0.25 ? 0.08 : 0.5;
+      const wa = isHeld(state, bond.a) ? 0.08 : 0.5;
+      const wb = isHeld(state, bond.b) ? 0.08 : 0.5;
       pos[a3] = pos[a3]! + dx * corr * wa;
       pos[a3 + 1] = pos[a3 + 1]! + dy * corr * wa;
       pos[a3 + 2] = pos[a3 + 2]! + dz * corr * wa;
@@ -268,55 +282,31 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
       pos[b3 + 2] = pos[b3 + 2]! - dz * corr * wb;
     }
 
-    const hk = home * (iter === iters - 1 ? 1 : 0.45);
-    if (hk > 0) {
-      for (let i = 0; i < n; i++) {
+    // The "clay" resistance spring only runs while you're actively dragging,
+    // and only fades in fully on the last sub-iteration. Idle homing is a
+    // completely separate, hard-range constant-speed pull (below), never a
+    // spring, so it never touches this pass.
+    const home = interacting ? DRAG_RESISTANCE * (iter === iters - 1 ? 1 : 0.45) : 0;
+    if (home > 0) {
+      for (let i = 0; i < state.n; i++) {
         // Resistance is felt only by material actually attached to whatever
         // you're dragging — never by an unrelated group elsewhere, even
-        // though it's equally "not grabbed" and interacting is globally true.
-        if (grabWeight[i]! > GRAB_HELD_EPS || !inHeldGroup[i]) continue;
+        // though it's equally "not grabbed" right now.
+        if (isHeld(state, i) || !inHeldGroup[i]) continue;
         const i3 = i * 3;
-        pos[i3] = pos[i3]! + (rest[i3]! - pos[i3]!) * hk;
-        pos[i3 + 1] = pos[i3 + 1]! + (rest[i3 + 1]! - pos[i3 + 1]!) * hk;
-        pos[i3 + 2] = pos[i3 + 2]! + (rest[i3 + 2]! - pos[i3 + 2]!) * hk;
+        pos[i3] = pos[i3]! + (rest[i3]! - pos[i3]!) * home;
+        pos[i3 + 1] = pos[i3 + 1]! + (rest[i3 + 1]! - pos[i3 + 1]!) * home;
+        pos[i3 + 2] = pos[i3 + 2]! + (rest[i3 + 2]! - pos[i3 + 2]!) * home;
       }
     }
   }
 
-  resolveOverlaps(state, spacing * OVERLAP);
-
-  const clusters = computeClusters(bonds, n);
-  applyGroupMagneticPull(state, clusters, dt);
-
-  const limit = p.worldRadius;
-  const limit2 = limit * limit;
-  for (let i = 0; i < n; i++) {
-    const i3 = i * 3;
-    const x = pos[i3]!;
-    const y = pos[i3 + 1]!;
-    const z = pos[i3 + 2]!;
-    const d2 = x * x + y * y + z * z;
-    // A held block must never be yanked out of your hand — only clamp what
-    // isn't currently grabbed (matches the exemption the home-spring uses).
-    if (d2 > limit2 && grabWeight[i]! <= GRAB_HELD_EPS) {
-      const s = limit / Math.sqrt(d2);
-      pos[i3] = x * s;
-      pos[i3 + 1] = y * s;
-      pos[i3 + 2] = z * s;
-    }
-
-    const dx = pos[i3]! - rest[i3]!;
-    const dy = pos[i3 + 1]! - rest[i3 + 1]!;
-    const dz = pos[i3 + 2]! - rest[i3 + 2]!;
-    strain[i] = Math.min(1, Math.hypot(dx, dy, dz) / (spacing * 3.2));
-  }
-
-  return { snaps, hasDetached: clusters.length > 1 };
+  return { snaps };
 }
 
 /**
  * Which connected group (by currently-live bonds) each particle belongs to.
- * Union-find over the bond graph — cheap enough to run every physics step
+ * Union-find over the bond graph — cheap enough to run twice a physics step
  * at this particle count (a few thousand array ops for ~1500 bonds).
  */
 export function computeClusters(bonds: Bond[], n: number): number[][] {
@@ -352,20 +342,15 @@ export function computeClusters(bonds: Bond[], n: number): number[][] {
  * Idle-only magnetic homing, done per connected group rather than per
  * particle. A pulled-off chunk is one entity: its "center" is the average
  * rest slot of whatever's still attached to it, and it either holds its
- * exact shape and position (out of magnet range, or someone in the group
- * was touched inside the last MAGNET_DELAY seconds) or rigidly translates
- * — same offset applied to every member, so the piece never deforms while
- * homing — toward closing that center's gap at MAGNET_PULL_SPEED
- * block-widths per second. Past MAGNET_RANGE_BLOCKS it holds forever.
+ * exact shape and position (out of magnet range, or someone in the group was
+ * touched within the last MAGNET_DELAY seconds) or rigidly translates — the
+ * same offset applied to every member, so the piece never deforms while
+ * homing — toward closing that center's gap at MAGNET_SPEED per second. Past
+ * MAGNET_RANGE it holds forever.
  */
-export function applyGroupMagneticPull(
-  state: FidgetState,
-  clusters: number[][],
-  dt: number,
-) {
-  const { pos, rest, grabWeight, idleFor } = state;
-  const rangeWorld = MAGNET_RANGE_BLOCKS * VOXEL_SPACING;
-  const stepWorld = MAGNET_PULL_SPEED * VOXEL_SPACING * dt;
+export function applyGroupMagneticPull(state: FidgetState, clusters: number[][], dt: number) {
+  const { pos, rest, idleFor } = state;
+  const stepWorld = MAGNET_SPEED * dt;
 
   for (const members of clusters) {
     let held = false;
@@ -377,7 +362,7 @@ export function applyGroupMagneticPull(
       ccy = 0,
       ccz = 0;
     for (const i of members) {
-      if (grabWeight[i]! > GRAB_HELD_EPS) held = true;
+      if (isHeld(state, i)) held = true;
       if (idleFor[i]! < minIdle) minIdle = idleFor[i]!;
       const i3 = i * 3;
       rcx += rest[i3]!;
@@ -394,7 +379,7 @@ export function applyGroupMagneticPull(
     const dy = rcy / m - ccy / m;
     const dz = rcz / m - ccz / m;
     const dist = Math.hypot(dx, dy, dz);
-    if (dist < 1e-6 || dist > rangeWorld) continue;
+    if (dist < 1e-6 || dist > MAGNET_RANGE) continue;
 
     const step = Math.min(dist, stepWorld);
     const inv = step / dist;
@@ -410,19 +395,41 @@ export function applyGroupMagneticPull(
   }
 }
 
+/**
+ * The one and only containment mechanism: a world-space sphere every
+ * particle is pulled back inside. No projection math, so nothing here can
+ * ever be numerically unstable the way a screen-space clamp is at grazing
+ * angles — it's a plain distance check.
+ */
+function applyContainment(state: FidgetState) {
+  const { n, pos } = state;
+  const limit2 = PLAY_RADIUS * PLAY_RADIUS;
+  for (let i = 0; i < n; i++) {
+    // A held block must never be yanked out of your hand.
+    if (isHeld(state, i)) continue;
+    const i3 = i * 3;
+    const x = pos[i3]!;
+    const y = pos[i3 + 1]!;
+    const z = pos[i3 + 2]!;
+    const d2 = x * x + y * y + z * z;
+    if (d2 <= limit2) continue;
+    const s = PLAY_RADIUS / Math.sqrt(d2);
+    pos[i3] = x * s;
+    pos[i3 + 1] = y * s;
+    pos[i3 + 2] = z * s;
+  }
+}
+
 function resolveOverlaps(state: FidgetState, minDist: number) {
-  const { n, pos, grabWeight } = state;
+  const { n, pos } = state;
   const cellSize = minDist;
   const buckets = new Map<number, number[]>();
-  const hash = (x: number, y: number, z: number) => {
-    const ix = Math.floor(x / cellSize);
-    const iy = Math.floor(y / cellSize);
-    const iz = Math.floor(z / cellSize);
-    return ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) | 0;
-  };
+  const hash = (ix: number, iy: number, iz: number) =>
+    ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) | 0;
+  const cellOf = (v: number) => Math.floor(v / cellSize);
 
   for (let i = 0; i < n; i++) {
-    const h = hash(pos[i * 3]!, pos[i * 3 + 1]!, pos[i * 3 + 2]!);
+    const h = hash(cellOf(pos[i * 3]!), cellOf(pos[i * 3 + 1]!), cellOf(pos[i * 3 + 2]!));
     let list = buckets.get(h);
     if (!list) {
       list = [];
@@ -432,47 +439,42 @@ function resolveOverlaps(state: FidgetState, minDist: number) {
   }
 
   const offsets: [number, number, number][] = [];
-  for (let ox = -1; ox <= 1; ox++) {
-    for (let oy = -1; oy <= 1; oy++) {
-      for (let oz = -1; oz <= 1; oz++) offsets.push([ox, oy, oz]);
-    }
-  }
+  for (let ox = -1; ox <= 1; ox++)
+    for (let oy = -1; oy <= 1; oy++) for (let oz = -1; oz <= 1; oz++) offsets.push([ox, oy, oz]);
 
   const min2 = minDist * minDist;
   for (let i = 0; i < n; i++) {
     const x = pos[i * 3]!;
     const y = pos[i * 3 + 1]!;
     const z = pos[i * 3 + 2]!;
-    const ix = Math.floor(x / cellSize);
-    const iy = Math.floor(y / cellSize);
-    const iz = Math.floor(z / cellSize);
+    const ix = cellOf(x);
+    const iy = cellOf(y);
+    const iz = cellOf(z);
     for (const [ox, oy, oz] of offsets) {
-      const list = buckets.get(
-        ((ix + ox) * 73856093) ^ ((iy + oy) * 19349663) ^ ((iz + oz) * 83492791),
-      );
+      const list = buckets.get(hash(ix + ox, iy + oy, iz + oz));
       if (!list) continue;
       for (const j of list) {
         if (j <= i) continue;
-        let dx = pos[j * 3]! - x;
-        let dy = pos[j * 3 + 1]! - y;
-        let dz = pos[j * 3 + 2]! - z;
+        const dx = pos[j * 3]! - x;
+        const dy = pos[j * 3 + 1]! - y;
+        const dz = pos[j * 3 + 2]! - z;
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > min2 || d2 < 1e-10) continue;
         const d = Math.sqrt(d2);
         const push = (minDist - d) / d;
-        TMP.nx = dx * push;
-        TMP.ny = dy * push;
-        TMP.nz = dz * push;
-        const ga = grabWeight[i]! > 0.25;
-        const gb = grabWeight[j]! > 0.25;
+        const nx = dx * push;
+        const ny = dy * push;
+        const nz = dz * push;
+        const ga = isHeld(state, i);
+        const gb = isHeld(state, j);
         const wa = ga && !gb ? 0 : gb && !ga ? 1 : 0.5;
         const wb = 1 - wa;
-        pos[i * 3] = pos[i * 3]! - TMP.nx * wa;
-        pos[i * 3 + 1] = pos[i * 3 + 1]! - TMP.ny * wa;
-        pos[i * 3 + 2] = pos[i * 3 + 2]! - TMP.nz * wa;
-        pos[j * 3] = pos[j * 3]! + TMP.nx * wb;
-        pos[j * 3 + 1] = pos[j * 3 + 1]! + TMP.ny * wb;
-        pos[j * 3 + 2] = pos[j * 3 + 2]! + TMP.nz * wb;
+        pos[i * 3] = pos[i * 3]! - nx * wa;
+        pos[i * 3 + 1] = pos[i * 3 + 1]! - ny * wa;
+        pos[i * 3 + 2] = pos[i * 3 + 2]! - nz * wa;
+        pos[j * 3] = pos[j * 3]! + nx * wb;
+        pos[j * 3 + 1] = pos[j * 3 + 1]! + ny * wb;
+        pos[j * 3 + 2] = pos[j * 3 + 2]! + nz * wb;
       }
     }
   }
@@ -529,7 +531,7 @@ export function applyPlaneSmear(
   const [nx, ny, nz] = normal;
   const [sx, sy, sz] = smear;
   for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > 0.4) continue;
+    if (grabWeight[i]! > HELD_EPS) continue;
     const i3 = i * 3;
     const dx = pos[i3]! - px;
     const dy = pos[i3 + 1]! - py;
@@ -556,7 +558,7 @@ export function applyScoop(
   const [dx, dy, dz] = camDir;
   const ring = radius * 0.72;
   for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > 0.4) continue;
+    if (grabWeight[i]! > HELD_EPS) continue;
     const i3 = i * 3;
     const px = pos[i3]! - cx;
     const py = pos[i3 + 1]! - cy;
@@ -568,8 +570,7 @@ export function applyScoop(
     pos[i3 + 1] = pos[i3 + 1]! + dy * strength * w;
     pos[i3 + 2] = pos[i3 + 2]! + dz * strength * w;
     if (d > 1e-4) {
-      const rd = d;
-      const k = ((ring - rd) / rd) * 0.18 * w;
+      const k = ((ring - d) / d) * 0.18 * w;
       pos[i3] = pos[i3]! + px * k;
       pos[i3 + 1] = pos[i3 + 1]! + py * k;
       pos[i3 + 2] = pos[i3 + 2]! + pz * k;
@@ -609,11 +610,7 @@ export function closestToRay(
   return {
     index: best,
     along: bestAlong,
-    point: [
-      origin[0] + dir[0] * bestAlong,
-      origin[1] + dir[1] * bestAlong,
-      origin[2] + dir[2] * bestAlong,
-    ],
+    point: [origin[0] + dir[0] * bestAlong, origin[1] + dir[1] * bestAlong, origin[2] + dir[2] * bestAlong],
   };
 }
 
