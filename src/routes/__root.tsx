@@ -1,4 +1,5 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "CLUMP";
@@ -39,6 +40,7 @@ export const Route = createRootRoute({
       <body>
         <Outlet />
         <Scripts />
+        <SpeedInsights />
       </body>
     </html>
   ),
