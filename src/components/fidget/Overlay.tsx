@@ -1,8 +1,11 @@
+import { useEffect, useState } from "react";
 import {
   Camera,
   Circle,
   Crosshair,
   Hand,
+  Maximize,
+  Minimize,
   Minus,
   Pen,
   RotateCcw,
@@ -42,6 +45,30 @@ const GRAVITY_LEVELS: { id: GravityLevel; label: string }[] = [
 function formatTuningValue(value: number, step: number): string {
   const decimals = (step.toString().split(".")[1] ?? "").length;
   return value.toFixed(decimals);
+}
+
+function useFullscreen(): [boolean, () => void] {
+  const [active, setActive] = useState(
+    () => typeof document !== "undefined" && document.fullscreenElement != null,
+  );
+
+  useEffect(() => {
+    const onChange = () => setActive(document.fullscreenElement != null);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggle = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void document.documentElement.requestFullscreen().catch(() => {
+        /* unsupported (e.g. iOS Safari) — silently no-op */
+      });
+    }
+  };
+
+  return [active, toggle];
 }
 
 const ICONS: Record<ToolId, typeof Hand> = {
@@ -86,6 +113,7 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
   const sheetMinimized = useFidget((s) => s.sheetMinimized);
   const openSheet = useFidget((s) => s.openSheet);
   const closeSheet = useFidget((s) => s.closeSheet);
+  const [fullscreen, toggleFullscreen] = useFullscreen();
 
   const tools = gunUnlocked
     ? [...TOOLS, { id: "gun" as const, label: "Gun", hint: "Point and fire" }]
@@ -134,6 +162,19 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
               </p>
             </button>
             <div className="pointer-events-auto relative flex gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+                aria-pressed={fullscreen}
+                onClick={toggleFullscreen}
+              >
+                {fullscreen ? (
+                  <Minimize className="size-5" strokeWidth={1.75} />
+                ) : (
+                  <Maximize className="size-5" strokeWidth={1.75} />
+                )}
+              </Button>
               {mode !== "floaty" ? (
                 <Button
                   variant="ghost"

@@ -110,6 +110,14 @@ export function FidgetApp() {
         engineRef.current?.toggleBoundary();
       } else if (e.code === "KeyC") {
         engineRef.current?.cycleCamera();
+      } else if (e.code === "KeyF") {
+        if (document.fullscreenElement) {
+          void document.exitFullscreen();
+        } else {
+          void document.documentElement.requestFullscreen().catch(() => {
+            /* unsupported (e.g. iOS Safari) — silently no-op */
+          });
+        }
       }
     };
     window.addEventListener("keydown", onKey);
