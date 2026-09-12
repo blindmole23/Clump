@@ -6,11 +6,10 @@ import {
   CAMERA_DIST_BASE,
   CLUMP_SCREEN_OFFSET,
   CUBE_SIZE,
-  GRAB_RADIUS,
+  DEFAULT_TUNING,
   GRAVITY,
   GRAVITY_SCALE,
   HOLE_RADIUS,
-  MAGNET_DELAY,
   MAGNET_SIZE_SCALE,
   PLANE_HEIGHT_BALLS,
   PLANE_SIZE_BALLS,
@@ -45,7 +44,7 @@ import {
   resumeAudioIfNeeded,
   unlockAudio,
 } from "./audio";
-import type { FidgetState, GravityLevel, MagnetSize, Mode, ShapeId, ToolId } from "./types";
+import type { FidgetState, GravityLevel, MagnetSize, Mode, ShapeId, ToolId, Tuning } from "./types";
 
 export type EngineHooks = {
   onRecovering: (v: boolean) => void;
@@ -131,6 +130,7 @@ export class FidgetEngine {
   private boundaryMesh: THREE.LineSegments | null = null;
   private showBoundary = false;
   private gravityLevel: GravityLevel = "low";
+  private tuning: Tuning = DEFAULT_TUNING;
 
   constructor(canvas: HTMLCanvasElement, hooks: EngineHooks) {
     this.canvas = canvas;
@@ -207,9 +207,9 @@ export class FidgetEngine {
     this.geom = new THREE.SphereGeometry(BALL_RADIUS, 14, 10);
     this.mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      metalness: 0.92,
-      roughness: 0.28,
-      envMapIntensity: 1.4,
+      metalness: 1,
+      roughness: 0.1,
+      envMapIntensity: 1.9,
     });
     this.mesh = new THREE.InstancedMesh(this.geom, this.mat, this.state.n);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -373,6 +373,10 @@ export class FidgetEngine {
     this.gravityLevel = level;
   }
 
+  setTuning(tuning: Tuning) {
+    this.tuning = tuning;
+  }
+
   morphTo(shape: ShapeId) {
     this.shape = shape;
     const cells = shape === "gun" ? buildGun() : buildCube(CUBE_SIZE);
@@ -511,7 +515,7 @@ export class FidgetEngine {
     };
 
     if (this.tool === "hand") {
-      const grab = collectGrab(this.state, point, GRAB_RADIUS);
+      const grab = collectGrab(this.state, point, this.tuning.grabRadius);
       ptr.indices = grab.indices;
       ptr.weights = grab.weights;
       ptr.offsets = new Float32Array(grab.indices.length * 3);
@@ -771,13 +775,14 @@ export class FidgetEngine {
       magnetHoming: floaty,
       elasticHome: floaty,
       containment: this.containment,
+      tuning: this.tuning,
     });
     this.hasDetached = hasDetached;
     this.shapePull *= Math.exp(-0.55 * dt);
     if (snaps > 0) playSnap(snaps);
 
     // "Remembering" (idle magnetic homing) only exists in floaty mode.
-    const rec = floaty && !this.interacting && this.idleFor > MAGNET_DELAY && hasDetached;
+    const rec = floaty && !this.interacting && this.idleFor > this.tuning.magnetDelay && hasDetached;
     if (rec !== this.recovering) {
       this.recovering = rec;
       this.hooks.onRecovering(rec);

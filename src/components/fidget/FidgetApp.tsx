@@ -12,6 +12,7 @@ export function FidgetApp() {
   const magnetSize = useFidget((s) => s.magnetSize);
   const mode = useFidget((s) => s.mode);
   const gravityLevel = useFidget((s) => s.gravityLevel);
+  const tuning = useFidget((s) => s.tuning);
   const gunUnlocked = useFidget((s) => s.gunUnlocked);
   const setRecovering = useFidget((s) => s.setRecovering);
   const setVoxelCount = useFidget((s) => s.setVoxelCount);
@@ -47,6 +48,7 @@ export function FidgetApp() {
       engine.setTool(useFidget.getState().tool);
       engine.setMuted(useFidget.getState().muted);
       engine.setMagnetSize(useFidget.getState().magnetSize);
+      engine.setTuning(useFidget.getState().tuning);
       engine.start();
       engineRef.current = engine;
     });
@@ -79,6 +81,10 @@ export function FidgetApp() {
   useEffect(() => {
     engineRef.current?.setGravityLevel(gravityLevel);
   }, [gravityLevel]);
+
+  useEffect(() => {
+    engineRef.current?.setTuning(tuning);
+  }, [tuning]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

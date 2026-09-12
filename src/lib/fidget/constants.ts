@@ -1,3 +1,5 @@
+import type { Tuning } from "./types";
+
 /**
  * Voxel budget for ~£200 phones (2026): Snapdragon 6 / Dimensity 6300 class.
  * One InstancedMesh draw call. ~250 PBD particles + 7 constraint iterations
@@ -111,4 +113,22 @@ export const GRAVITY_SCALE: Record<"low" | "medium" | "high", number> = {
   low: 1,
   medium: 1.33,
   high: 2,
+};
+
+/** The live-tunable values above, gathered into one object for the Dev
+ * panel's sliders (see types.ts Tuning/TUNING_FIELDS). This is the "factory
+ * reset" the panel's Reset button restores. */
+export const DEFAULT_TUNING: Tuning = {
+  bondStiffness: BOND_STIFFNESS,
+  packingDist: PACKING_DIST,
+  solverIterations: SOLVER_ITERATIONS,
+  bondBreakDist: BOND_BREAK_DIST,
+  bondReformDist: BOND_REFORM_DIST,
+  bondReformDelay: BOND_REFORM_DELAY,
+  magnetDelay: MAGNET_DELAY,
+  magnetRange: MAGNET_RANGE,
+  magnetSpeed: MAGNET_SPEED,
+  dragResistance: DRAG_RESISTANCE,
+  heldEps: HELD_EPS,
+  grabRadius: GRAB_RADIUS,
 };

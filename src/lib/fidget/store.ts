@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { GUN_UNLOCK_TAPS } from "./constants";
+import { DEFAULT_TUNING, GUN_UNLOCK_TAPS } from "./constants";
 import { playUnlock } from "./audio";
-import type { GravityLevel, MagnetSize, Mode, ShapeId, ToolId } from "./types";
+import type { GravityLevel, MagnetSize, Mode, ShapeId, ToolId, Tuning } from "./types";
 
 const GUN_KEY = "clump.gunUnlocked";
 const SIZE_KEY = "clump.magnetSize";
 const GRAVITY_KEY = "clump.gravityLevel";
+const TUNING_KEY = "clump.tuning";
 
 function readGunUnlocked(): boolean {
   if (typeof window === "undefined") return false;
@@ -36,6 +37,23 @@ function readGravityLevel(): GravityLevel {
   }
 }
 
+function readTuning(): Tuning {
+  if (typeof window === "undefined") return DEFAULT_TUNING;
+  try {
+    const raw = window.localStorage.getItem(TUNING_KEY);
+    if (!raw) return DEFAULT_TUNING;
+    const parsed = JSON.parse(raw) as Partial<Tuning>;
+    const merged = { ...DEFAULT_TUNING };
+    for (const key of Object.keys(DEFAULT_TUNING) as (keyof Tuning)[]) {
+      const v = parsed[key];
+      if (typeof v === "number" && Number.isFinite(v)) merged[key] = v;
+    }
+    return merged;
+  } catch {
+    return DEFAULT_TUNING;
+  }
+}
+
 type FidgetUI = {
   started: boolean;
   tool: ToolId;
@@ -50,6 +68,9 @@ type FidgetUI = {
   magnetSize: MagnetSize;
   mode: Mode;
   gravityLevel: GravityLevel;
+  tuning: Tuning;
+  activeSheet: "settings" | "dev" | null;
+  sheetMinimized: boolean;
   start: () => void;
   setTool: (tool: ToolId) => void;
   setMode: (mode: Mode) => void;
@@ -62,6 +83,10 @@ type FidgetUI = {
   unlockGun: () => void;
   setToast: (msg: string | null) => void;
   setMagnetSize: (size: MagnetSize) => void;
+  setTuning: (partial: Partial<Tuning>) => void;
+  resetTuning: () => void;
+  openSheet: (id: "settings" | "dev") => void;
+  closeSheet: () => void;
 };
 
 export const useFidget = create<FidgetUI>((set, get) => ({
@@ -78,6 +103,9 @@ export const useFidget = create<FidgetUI>((set, get) => ({
   magnetSize: readMagnetSize(),
   mode: "floaty",
   gravityLevel: readGravityLevel(),
+  tuning: readTuning(),
+  activeSheet: null,
+  sheetMinimized: false,
   start: () => set({ started: true }),
   setTool: (tool) => {
     if (tool === "gun" && !get().gunUnlocked) return;
@@ -128,4 +156,28 @@ export const useFidget = create<FidgetUI>((set, get) => ({
     }
     set({ magnetSize });
   },
+  setTuning: (partial) => {
+    const tuning = { ...get().tuning, ...partial };
+    try {
+      window.localStorage.setItem(TUNING_KEY, JSON.stringify(tuning));
+    } catch {
+      /* ignore */
+    }
+    set({ tuning });
+  },
+  resetTuning: () => {
+    try {
+      window.localStorage.setItem(TUNING_KEY, JSON.stringify(DEFAULT_TUNING));
+    } catch {
+      /* ignore */
+    }
+    set({ tuning: DEFAULT_TUNING });
+  },
+  openSheet: (id) =>
+    set((s) =>
+      s.activeSheet === id
+        ? { sheetMinimized: !s.sheetMinimized }
+        : { activeSheet: id, sheetMinimized: false },
+    ),
+  closeSheet: () => set({ activeSheet: null, sheetMinimized: false }),
 }));

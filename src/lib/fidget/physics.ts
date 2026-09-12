@@ -1,21 +1,15 @@
-import {
-  BOND_BREAK_DIST,
-  BOND_REFORM_DELAY,
-  BOND_REFORM_DIST,
-  BOND_STIFFNESS,
-  DRAG_RESISTANCE,
-  HELD_EPS,
-  MAGNET_DELAY,
-  MAGNET_RANGE,
-  MAGNET_SPEED,
-  PACKING_DIST,
-  SOLVER_ITERATIONS,
-  VOXEL_SPACING,
-} from "./constants";
-import type { Bond, FidgetState } from "./types";
+import { DEFAULT_TUNING, VOXEL_SPACING } from "./constants";
+import type { Bond, FidgetState, Tuning } from "./types";
+
+// The Dev panel's sliders write here (via stepPhysics's `tuning` param,
+// applied at the top of every step) rather than threading a tuning object
+// through every helper function's signature individually. Safe because
+// stepPhysics always runs start-to-finish before the next one begins — no
+// re-entrancy, single-threaded JS.
+let active: Tuning = DEFAULT_TUNING;
 
 function isHeld(state: FidgetState, i: number): boolean {
-  return state.grabWeight[i]! > HELD_EPS;
+  return state.grabWeight[i]! > active.heldEps;
 }
 
 export function buildBonds(rest: Float32Array, n: number): Bond[] {
@@ -165,6 +159,8 @@ export type StepParams = {
    */
   elasticHome: boolean;
   containment: Containment;
+  /** Live-tunable bond/magnet parameters — see types.ts Tuning. */
+  tuning: Tuning;
 };
 
 export type StepResult = {
@@ -175,6 +171,7 @@ export type StepResult = {
 };
 
 export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
+  active = p.tuning;
   const { n, pos, rest, strain, bonds } = state;
   const dt = p.dt;
 
@@ -188,7 +185,7 @@ export function stepPhysics(state: FidgetState, p: StepParams): StepResult {
   const inHeldGroup = groupMask(n, preClusters, (i) => isHeld(state, i));
 
   const { snaps } = solveBonds(state, dt, p.interacting && p.elasticHome, inHeldGroup);
-  resolveOverlaps(state, PACKING_DIST);
+  resolveOverlaps(state, active.packingDist);
 
   const clusters = computeClusters(bonds, n);
   if (p.magnetHoming) applyGroupMagneticPull(state, clusters, dt);
@@ -264,8 +261,8 @@ function solveBonds(
   inHeldGroup: Uint8Array,
 ): { snaps: number } {
   const { pos, rest, bonds } = state;
-  const iters = dt > 1 / 42 ? 4 : SOLVER_ITERATIONS;
-  const stiff = BOND_STIFFNESS;
+  const iters = dt > 1 / 42 ? 4 : active.solverIterations;
+  const stiff = active.bondStiffness;
   let snaps = 0;
 
   for (let iter = 0; iter < iters; iter++) {
@@ -284,9 +281,9 @@ function solveBonds(
         // multi-block grab shears itself apart the moment its tightly-held
         // center outruns its loosely-held edges.
         const bothHeld = isHeld(state, bond.a) && isHeld(state, bond.b);
-        if (d > BOND_BREAK_DIST && !bothHeld) {
+        if (d > active.bondBreakDist && !bothHeld) {
           bond.live = 0;
-          bond.cooldown = BOND_REFORM_DELAY;
+          bond.cooldown = active.bondReformDelay;
           continue;
         }
       } else {
@@ -294,10 +291,10 @@ function solveBonds(
         if (iter === 0 && bond.cooldown > 0) {
           bond.cooldown = Math.max(0, bond.cooldown - dt);
         }
-        if (bond.cooldown <= 0 && d < BOND_REFORM_DIST) {
+        if (bond.cooldown <= 0 && d < active.bondReformDist) {
           bond.live = 1;
           snaps++;
-        } else if (d < BOND_BREAK_DIST) {
+        } else if (d < active.bondBreakDist) {
           // Still drifting near each other post-break: a gentle pull keeps
           // loose neighbors from wandering off before they're eligible to
           // reform, without the stiffness of a live bond.
@@ -331,7 +328,7 @@ function solveBonds(
     // and only fades in fully on the last sub-iteration. Idle homing is a
     // completely separate, hard-range constant-speed pull (below), never a
     // spring, so it never touches this pass.
-    const home = interacting ? DRAG_RESISTANCE * (iter === iters - 1 ? 1 : 0.45) : 0;
+    const home = interacting ? active.dragResistance * (iter === iters - 1 ? 1 : 0.45) : 0;
     if (home > 0) {
       for (let i = 0; i < state.n; i++) {
         // Resistance is felt only by material actually attached to whatever
@@ -395,7 +392,7 @@ export function computeClusters(bonds: Bond[], n: number): number[][] {
  */
 export function applyGroupMagneticPull(state: FidgetState, clusters: number[][], dt: number) {
   const { pos, rest, idleFor } = state;
-  const stepWorld = MAGNET_SPEED * dt;
+  const stepWorld = active.magnetSpeed * dt;
 
   for (const members of clusters) {
     let held = false;
@@ -417,14 +414,14 @@ export function applyGroupMagneticPull(state: FidgetState, clusters: number[][],
       ccy += pos[i3 + 1]!;
       ccz += pos[i3 + 2]!;
     }
-    if (held || minIdle < MAGNET_DELAY) continue;
+    if (held || minIdle < active.magnetDelay) continue;
 
     const m = members.length;
     const dx = rcx / m - ccx / m;
     const dy = rcy / m - ccy / m;
     const dz = rcz / m - ccz / m;
     const dist = Math.hypot(dx, dy, dz);
-    if (dist < 1e-6 || dist > MAGNET_RANGE) continue;
+    if (dist < 1e-6 || dist > active.magnetRange) continue;
 
     const step = Math.min(dist, stepWorld);
     const inv = step / dist;
@@ -651,7 +648,7 @@ export function carveHole(
   for (const bond of bonds) {
     if (bond.live && (inHole[bond.a] || inHole[bond.b])) {
       bond.live = 0;
-      bond.cooldown = BOND_REFORM_DELAY;
+      bond.cooldown = active.bondReformDelay;
     }
   }
 }
@@ -679,7 +676,7 @@ export function applyLineSmear(
   const [bx, by, bz] = bladeAxis;
   const [sx, sy, sz] = smear;
   for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > HELD_EPS) continue;
+    if (grabWeight[i]! > active.heldEps) continue;
     const i3 = i * 3;
     const dx = pos[i3]! - px;
     const dy = pos[i3 + 1]! - py;
@@ -714,7 +711,7 @@ export function applyScoop(
   const [dx, dy, dz] = camDir;
   const ring = radius * 0.72;
   for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > HELD_EPS) continue;
+    if (grabWeight[i]! > active.heldEps) continue;
     const i3 = i * 3;
     const px = pos[i3]! - cx;
     const py = pos[i3 + 1]! - cy;
