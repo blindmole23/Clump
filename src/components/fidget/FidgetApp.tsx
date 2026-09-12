@@ -13,6 +13,7 @@ export function FidgetApp() {
   const mode = useFidget((s) => s.mode);
   const gravityLevel = useFidget((s) => s.gravityLevel);
   const tuning = useFidget((s) => s.tuning);
+  const pinchZoomEnabled = useFidget((s) => s.pinchZoomEnabled);
   const gunUnlocked = useFidget((s) => s.gunUnlocked);
   const setRecovering = useFidget((s) => s.setRecovering);
   const setVoxelCount = useFidget((s) => s.setVoxelCount);
@@ -49,6 +50,7 @@ export function FidgetApp() {
       engine.setMuted(useFidget.getState().muted);
       engine.setMagnetSize(useFidget.getState().magnetSize);
       engine.setTuning(useFidget.getState().tuning);
+      engine.setPinchZoomEnabled(useFidget.getState().pinchZoomEnabled);
       engine.start();
       engineRef.current = engine;
     });
@@ -87,14 +89,19 @@ export function FidgetApp() {
   }, [tuning]);
 
   useEffect(() => {
+    engineRef.current?.setPinchZoomEnabled(pinchZoomEnabled);
+  }, [pinchZoomEnabled]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
       if (e.code === "Digit1") setTool("hand");
       else if (e.code === "Digit2") setTool("spike");
       else if (e.code === "Digit3") setTool("trowel");
-      else if (e.code === "Digit4") setTool("loop");
-      else if (e.code === "Digit5") setTool("needle");
-      else if (e.code === "KeyG") {
+      else if (e.code === "Digit4") setTool("needle");
+      else if (e.code === "Digit0") {
+        engineRef.current?.recenter();
+      } else if (e.code === "KeyG") {
         if (!useFidget.getState().gunUnlocked) unlockGun();
         setTool("gun");
       } else if (e.code === "KeyR") {
@@ -156,6 +163,7 @@ export function FidgetApp() {
           engineRef.current?.morphTo(next);
         }}
         onCycleCamera={() => engineRef.current?.cycleCamera()}
+        onRecenter={() => engineRef.current?.recenter()}
       />
       <span className="sr-only">
         {gunUnlocked ? "gun unlocked" : "clump fidget"}

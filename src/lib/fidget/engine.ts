@@ -20,11 +20,12 @@ import {
   TROUGH_LENGTH_BALLS,
   TROUGH_WIDTH_BALLS,
   VOXEL_SPACING,
+  ZOOM_MAX,
+  ZOOM_MIN,
 } from "./constants";
 import {
   applyImpulse,
   applyLineSmear,
-  applyScoop,
   carveHole,
   closestToRay,
   collectGrab,
@@ -106,6 +107,12 @@ export class FidgetEngine {
   private camYaw = 0.35;
   private camPitch = 0.18;
   private camDist = CAMERA_DIST_BASE;
+  private zoom = 1;
+  private targetZoom = 1;
+  private pinchZoomEnabled = false;
+  private pinching = false;
+  private pinchStartDist = 0;
+  private pinchStartZoom = 1;
   private hasDetached = false;
   private reducedMotion: boolean;
   private flash: THREE.PointLight;
@@ -233,6 +240,8 @@ export class FidgetEngine {
     this.mode = mode;
     this.containment = this.containmentFor(mode);
     this.cameraPresetIndex = 0;
+    this.zoom = 1;
+    this.targetZoom = 1;
     this.dropIntoMode();
     this.updateBoundaryMesh();
     this.placeCamera(0, true);
@@ -373,6 +382,35 @@ export class FidgetEngine {
     this.gravityLevel = level;
   }
 
+  setPinchZoomEnabled(v: boolean) {
+    this.pinchZoomEnabled = v;
+  }
+
+  private setZoom(z: number) {
+    const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+    this.zoom = clamped;
+    this.targetZoom = clamped;
+  }
+
+  /** Zooms out (or in) just enough to fit every current ball back in frame,
+   * animated smoothly rather than snapped — for when the chaotic ping-around
+   * has scattered pieces uncomfortably close to or far from the camera. */
+  recenter() {
+    if (this.mode !== "floaty") {
+      this.targetZoom = 1;
+      return;
+    }
+    const { n, pos } = this.state;
+    let maxR = 0.6;
+    for (let i = 0; i < n; i++) {
+      const r = Math.hypot(pos[i * 3]!, pos[i * 3 + 1]!, pos[i * 3 + 2]!);
+      if (r > maxR) maxR = r;
+    }
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    const fitDist = (maxR * 1.4) / Math.tan(fovRad / 2);
+    this.targetZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, fitDist / this.camDist));
+  }
+
   setTuning(tuning: Tuning) {
     this.tuning = tuning;
   }
@@ -441,6 +479,7 @@ export class FidgetEngine {
     this.canvas.addEventListener("pointerup", this.onUp);
     this.canvas.addEventListener("pointercancel", this.onUp);
     this.canvas.addEventListener("contextmenu", prevent);
+    this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
     window.addEventListener("resize", this.resize);
     document.addEventListener("visibilitychange", this.onVis);
     window.addEventListener("blur", this.onBlur);
@@ -452,10 +491,17 @@ export class FidgetEngine {
     this.canvas.removeEventListener("pointerup", this.onUp);
     this.canvas.removeEventListener("pointercancel", this.onUp);
     this.canvas.removeEventListener("contextmenu", prevent);
+    this.canvas.removeEventListener("wheel", this.onWheel);
     window.removeEventListener("resize", this.resize);
     document.removeEventListener("visibilitychange", this.onVis);
     window.removeEventListener("blur", this.onBlur);
   }
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const factor = Math.exp(e.deltaY * 0.0015);
+    this.setZoom(this.zoom * factor);
+  };
 
   private onVis = () => {
     resumeAudioIfNeeded();
@@ -476,6 +522,7 @@ export class FidgetEngine {
     this.pointers.clear();
     this.state.grabWeight.fill(0);
     this.interacting = false;
+    this.pinching = false;
   }
 
   private bumpActivity() {
@@ -515,6 +562,15 @@ export class FidgetEngine {
     };
 
     if (this.tool === "hand") {
+      if (this.pinchZoomEnabled && this.pointers.size === 1) {
+        // A second finger arriving while pinch-zoom is enabled: abandon any
+        // grab in progress and start a pinch-zoom gesture instead of the
+        // usual two-finger stretch.
+        this.state.grabWeight.fill(0);
+        this.pointers.set(e.pointerId, ptr);
+        this.beginPinch();
+        return;
+      }
       const grab = collectGrab(this.state, point, this.tuning.grabRadius);
       ptr.indices = grab.indices;
       ptr.weights = grab.weights;
@@ -557,7 +613,7 @@ export class FidgetEngine {
       return;
     }
 
-    this.strokeTool(point, ray.dir, 1, [0, 0, 0], true, ray.origin);
+    this.strokeTool(point, ray.dir, [0, 0, 0], true, ray.origin);
     playPoke(0.7);
     haptic(this.muted, 10);
   };
@@ -567,8 +623,6 @@ export class FidgetEngine {
     if (!ptr) return;
     e.preventDefault();
     this.bumpActivity();
-    const dx = e.clientX - ptr.lastX;
-    const dy = e.clientY - ptr.lastY;
     ptr.lastX = e.clientX;
     ptr.lastY = e.clientY;
     ptr.cx = e.clientX;
@@ -583,6 +637,12 @@ export class FidgetEngine {
     ptr.hit.set(planePt[0], planePt[1], planePt[2]);
 
     if (this.tool === "hand" || this.tool === "needle") {
+      if (this.tool === "hand" && this.pinching && this.pointers.size === 2) {
+        const [a, b] = [...this.pointers.values()];
+        const d = Math.hypot(a!.cx - b!.cx, a!.cy - b!.cy) || 1;
+        this.setZoom(this.pinchStartZoom * (this.pinchStartDist / d));
+        return;
+      }
       if (this.tool === "hand" && this.pointers.size >= 2) {
         const now = performance.now();
         if (now - this.lastStretchAt > 180) {
@@ -597,8 +657,7 @@ export class FidgetEngine {
     if (this.tool === "gun") return;
 
     const ray = this.pointerRay(e.clientX, e.clientY);
-    const dist = Math.hypot(dx, dy);
-    this.strokeTool(planePt, ray.dir, Math.min(1.6, 0.35 + dist * 0.02), smear, false, ray.origin);
+    this.strokeTool(planePt, ray.dir, smear, false, ray.origin);
   };
 
   private onUp = (e: PointerEvent) => {
@@ -609,6 +668,7 @@ export class FidgetEngine {
     } catch {
       /* ignore */
     }
+    if (this.pinching && this.pointers.size < 2) this.pinching = false;
     if (!ptr) {
       if (this.pointers.size === 0) {
         this.state.grabWeight.fill(0);
@@ -638,6 +698,17 @@ export class FidgetEngine {
     }
   };
 
+  private beginPinch() {
+    this.pinching = true;
+    for (const p of this.pointers.values()) {
+      p.indices = [];
+      p.weights = [];
+    }
+    const [a, b] = [...this.pointers.values()];
+    this.pinchStartDist = a && b ? Math.hypot(a.cx - b.cx, a.cy - b.cy) || 1 : 1;
+    this.pinchStartZoom = this.zoom;
+  }
+
   private assignGrabs() {
     this.state.grabWeight.fill(0);
     for (const ptr of this.pointers.values()) {
@@ -658,7 +729,6 @@ export class FidgetEngine {
   private strokeTool(
     point: [number, number, number],
     dir: [number, number, number],
-    amount: number,
     smear: [number, number, number],
     tap: boolean,
     rayOrigin: [number, number, number],
@@ -707,9 +777,6 @@ export class FidgetEngine {
         SCRAPE_THICKNESS,
         tap ? 0.35 : 0.22,
       );
-    } else if (this.tool === "loop") {
-      this.camera.getWorldDirection(this.camDir);
-      applyScoop(this.state, point, [this.camDir.x, this.camDir.y, this.camDir.z], 0.7, tap ? 0.08 : 0.035 * amount);
     }
   }
 
@@ -765,6 +832,7 @@ export class FidgetEngine {
     if (this.mode === "floaty" && !this.reducedMotion && !this.interacting && !this.hasDetached) {
       this.camYaw += dt * 0.12;
     }
+    this.zoom += (this.targetZoom - this.zoom) * (1 - Math.exp(-8 * dt));
     this.placeCamera(dt);
 
     const floaty = this.mode === "floaty";
@@ -799,18 +867,22 @@ export class FidgetEngine {
   private placeCamera(dt: number, instant = false) {
     if (this.mode !== "floaty") {
       const preset = this.cameraPresets(this.mode)[this.cameraPresetIndex]!;
+      this.lookTarget.set(preset.look[0], preset.look[1], preset.look[2]);
+      // Zoom scales the camera's offset from its look target, not its raw
+      // position — dollying in/out along the same sightline rather than
+      // sliding toward the world origin.
       this.tmp.set(preset.pos[0], preset.pos[1], preset.pos[2]);
+      this.tmp.sub(this.lookTarget).multiplyScalar(this.zoom).add(this.lookTarget);
       if (instant) this.camera.position.copy(this.tmp);
       else this.camera.position.lerp(this.tmp, 1 - Math.exp(-8 * dt));
       this.camera.up.set(preset.up[0], preset.up[1], preset.up[2]);
-      this.lookTarget.set(preset.look[0], preset.look[1], preset.look[2]);
       this.camera.lookAt(this.lookTarget);
       return;
     }
 
     const yaw = this.camYaw;
     const pitch = this.camPitch;
-    const dist = this.camDist;
+    const dist = this.camDist * this.zoom;
     const shake = this.trauma * this.trauma;
     const ox = (Math.random() * 2 - 1) * shake * 0.08;
     const oy = (Math.random() * 2 - 1) * shake * 0.06;

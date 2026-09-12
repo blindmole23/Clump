@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   Camera,
-  Circle,
   Crosshair,
+  Focus,
   Hand,
   Maximize,
   Minimize,
@@ -75,7 +75,6 @@ const ICONS: Record<ToolId, typeof Hand> = {
   hand: Hand,
   spike: Triangle,
   trowel: Shovel,
-  loop: Circle,
   needle: Pen,
   gun: Crosshair,
 };
@@ -84,9 +83,10 @@ type OverlayProps = {
   onReset: () => void;
   onMorphGun: () => void;
   onCycleCamera: () => void;
+  onRecenter: () => void;
 };
 
-export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
+export function Overlay({ onReset, onMorphGun, onCycleCamera, onRecenter }: OverlayProps) {
   const started = useFidget((s) => s.started);
   const start = useFidget((s) => s.start);
   const tool = useFidget((s) => s.tool);
@@ -109,6 +109,8 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
   const tuning = useFidget((s) => s.tuning);
   const setTuning = useFidget((s) => s.setTuning);
   const resetTuning = useFidget((s) => s.resetTuning);
+  const pinchZoomEnabled = useFidget((s) => s.pinchZoomEnabled);
+  const setPinchZoomEnabled = useFidget((s) => s.setPinchZoomEnabled);
   const activeSheet = useFidget((s) => s.activeSheet);
   const sheetMinimized = useFidget((s) => s.sheetMinimized);
   const openSheet = useFidget((s) => s.openSheet);
@@ -200,6 +202,14 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
                 ) : (
                   <Volume2 className="size-5" strokeWidth={1.75} />
                 )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Recenter camera"
+                onClick={onRecenter}
+              >
+                <Focus className="size-5" strokeWidth={1.75} />
               </Button>
               <Button
                 variant="ghost"
@@ -383,6 +393,31 @@ export function Overlay({ onReset, onMorphGun, onCycleCamera }: OverlayProps) {
                             </div>
                           </>
                         ) : null}
+                        <p className="mt-4 text-xs tracking-wide text-subtle">
+                          Two-finger gesture
+                        </p>
+                        <div className="mt-2 flex gap-1 rounded-xl border border-border bg-bg/40 p-1">
+                          <Button
+                            variant="dock"
+                            size="md"
+                            className="h-9 flex-1 px-0 text-xs"
+                            data-active={!pinchZoomEnabled}
+                            aria-pressed={!pinchZoomEnabled}
+                            onClick={() => setPinchZoomEnabled(false)}
+                          >
+                            Stretch
+                          </Button>
+                          <Button
+                            variant="dock"
+                            size="md"
+                            className="h-9 flex-1 px-0 text-xs"
+                            data-active={pinchZoomEnabled}
+                            aria-pressed={pinchZoomEnabled}
+                            onClick={() => setPinchZoomEnabled(true)}
+                          >
+                            Zoom
+                          </Button>
+                        </div>
                       </>
                     ) : (
                       <>

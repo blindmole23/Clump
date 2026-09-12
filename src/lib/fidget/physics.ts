@@ -670,11 +670,15 @@ export function applyLineSmear(
   thickness: number,
   flatten: number,
 ) {
-  const { n, pos, grabWeight } = state;
+  const { n, pos, grabWeight, bonds } = state;
   const [px, py, pz] = point;
   const [nx, ny, nz] = normal;
   const [bx, by, bz] = bladeAxis;
   const [sx, sy, sz] = smear;
+  // Which particles the blade's strip currently covers — unbounded along
+  // `normal` (the camera's view axis), so the strip already reaches clean
+  // through the clump's full depth, not just its near surface.
+  const inStrip = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     if (grabWeight[i]! > active.heldEps) continue;
     const i3 = i * 3;
@@ -692,41 +696,19 @@ export function applyLineSmear(
     const perpZ = dz - bz * along - nz * distN;
     const perp = Math.hypot(perpX, perpY, perpZ);
     if (perp > thickness) continue;
+    inStrip[i] = 1;
     const w = 1 - perp / thickness;
     pos[i3] = pos[i3]! - nx * distN * flatten * w + sx * w;
     pos[i3 + 1] = pos[i3 + 1]! - ny * distN * flatten * w + sy * w;
     pos[i3 + 2] = pos[i3 + 2]! - nz * distN * flatten * w + sz * w;
   }
-}
-
-export function applyScoop(
-  state: FidgetState,
-  center: [number, number, number],
-  camDir: [number, number, number],
-  radius: number,
-  strength: number,
-) {
-  const { n, pos, grabWeight } = state;
-  const [cx, cy, cz] = center;
-  const [dx, dy, dz] = camDir;
-  const ring = radius * 0.72;
-  for (let i = 0; i < n; i++) {
-    if (grabWeight[i]! > active.heldEps) continue;
-    const i3 = i * 3;
-    const px = pos[i3]! - cx;
-    const py = pos[i3 + 1]! - cy;
-    const pz = pos[i3 + 2]! - cz;
-    const d = Math.hypot(px, py, pz);
-    if (d > radius) continue;
-    const w = 1 - d / radius;
-    pos[i3] = pos[i3]! + dx * strength * w;
-    pos[i3 + 1] = pos[i3 + 1]! + dy * strength * w;
-    pos[i3 + 2] = pos[i3 + 2]! + dz * strength * w;
-    if (d > 1e-4) {
-      const k = ((ring - d) / d) * 0.18 * w;
-      pos[i3] = pos[i3]! + px * k;
-      pos[i3 + 1] = pos[i3 + 1]! + py * k;
-      pos[i3 + 2] = pos[i3 + 2]! + pz * k;
+  // Sever bonds through the strip outright — same "split the mass" mechanism
+  // as carveHole's — rather than just nudging positions, which the ordinary
+  // elastic bond correction would otherwise pull right back together.
+  for (const bond of bonds) {
+    if (bond.live && (inStrip[bond.a] || inStrip[bond.b])) {
+      bond.live = 0;
+      bond.cooldown = active.bondReformDelay;
     }
   }
 }

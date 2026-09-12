@@ -65,13 +65,18 @@ export const PLAY_RADIUS = 3.4;
 export const GRAB_RADIUS = 0.62;
 
 /** Spike: punches a hard-edged cylindrical hole clean through the clump —
- * about 2 balls wide — rather than a soft radial impulse. */
-export const HOLE_RADIUS = VOXEL_SPACING * 1.0;
+ * about 3 balls wide — rather than a soft radial impulse. */
+export const HOLE_RADIUS = VOXEL_SPACING * 1.5;
 
-/** Trowel: an 8-ball-long flat blade edge (like a credit card) that scrapes
- * across the surface, rather than a circular smear. */
-export const SCRAPE_HALF_LENGTH = VOXEL_SPACING * 4;
+/** Trowel: a 12-ball-long flat blade edge (like a credit card) that cuts
+ * clean through the clump, rather than a circular smear. */
+export const SCRAPE_HALF_LENGTH = VOXEL_SPACING * 6;
 export const SCRAPE_THICKNESS = VOXEL_SPACING * 1.1;
+
+/** Continuous camera zoom (wheel/pinch), applied as a multiplier on top of
+ * the magnet-size-derived base distance. 1 is the untouched default. */
+export const ZOOM_MIN = 0.4;
+export const ZOOM_MAX = 2.6;
 
 /**
  * On-screen magnet size. There's no web API for a device's true physical

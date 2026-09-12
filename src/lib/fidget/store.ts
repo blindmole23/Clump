@@ -7,6 +7,7 @@ const GUN_KEY = "clump.gunUnlocked";
 const SIZE_KEY = "clump.magnetSize";
 const GRAVITY_KEY = "clump.gravityLevel";
 const TUNING_KEY = "clump.tuning";
+const PINCH_ZOOM_KEY = "clump.pinchZoom";
 
 function readGunUnlocked(): boolean {
   if (typeof window === "undefined") return false;
@@ -34,6 +35,15 @@ function readGravityLevel(): GravityLevel {
     return v === "low" || v === "medium" || v === "high" ? v : "low";
   } catch {
     return "low";
+  }
+}
+
+function readPinchZoomEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(PINCH_ZOOM_KEY) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -69,6 +79,7 @@ type FidgetUI = {
   mode: Mode;
   gravityLevel: GravityLevel;
   tuning: Tuning;
+  pinchZoomEnabled: boolean;
   activeSheet: "settings" | "dev" | null;
   sheetMinimized: boolean;
   start: () => void;
@@ -85,6 +96,7 @@ type FidgetUI = {
   setMagnetSize: (size: MagnetSize) => void;
   setTuning: (partial: Partial<Tuning>) => void;
   resetTuning: () => void;
+  setPinchZoomEnabled: (v: boolean) => void;
   openSheet: (id: "settings" | "dev") => void;
   closeSheet: () => void;
 };
@@ -104,6 +116,7 @@ export const useFidget = create<FidgetUI>((set, get) => ({
   mode: "floaty",
   gravityLevel: readGravityLevel(),
   tuning: readTuning(),
+  pinchZoomEnabled: readPinchZoomEnabled(),
   activeSheet: null,
   sheetMinimized: false,
   start: () => set({ started: true }),
@@ -172,6 +185,14 @@ export const useFidget = create<FidgetUI>((set, get) => ({
       /* ignore */
     }
     set({ tuning: DEFAULT_TUNING });
+  },
+  setPinchZoomEnabled: (pinchZoomEnabled) => {
+    try {
+      window.localStorage.setItem(PINCH_ZOOM_KEY, pinchZoomEnabled ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    set({ pinchZoomEnabled });
   },
   openSheet: (id) =>
     set((s) =>

@@ -1,4 +1,4 @@
-export type ToolId = "hand" | "spike" | "trowel" | "loop" | "needle" | "gun";
+export type ToolId = "hand" | "spike" | "trowel" | "needle" | "gun";
 
 export type ShapeId = "lump" | "gun";
 
@@ -62,8 +62,7 @@ export type Tool = {
 export const TOOLS: Tool[] = [
   { id: "hand", label: "Hand", hint: "Tap, push, pinch-stretch" },
   { id: "spike", label: "Spike", hint: "Punch a hole, split the mass" },
-  { id: "trowel", label: "Trowel", hint: "Flatten and smear" },
-  { id: "loop", label: "Loop", hint: "Scoop a pocket" },
+  { id: "trowel", label: "Trowel", hint: "Slice clean through, splits the mass" },
   { id: "needle", label: "Needle", hint: "Pull a single magnet" },
 ];
 
